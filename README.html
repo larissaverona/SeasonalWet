@@ -355,9 +355,9 @@ display: none;
 <div id="seasonalwet" class="section level2">
 <h2>SeasonalWet</h2>
 <p>This repository contains the data processing and analysis workflow
-for analyzing carbon dynamics of seasonal wetlands in Cerrado. This is
-part of NSFDEB-NERC: Spatial and temporal tradeoffs in CO2 and CH4
-emissions in tropical wetlands</p>
+for analyzing carbon dynamics in seasonal wetlands in the Cerrado. This
+work is part of the NSF DEB–NERC project: *Spatial and temporal
+tradeoffs in CO2 and CH4 emissions in tropical wetlands*.</p>
 <hr />
 </div>
 <div id="project-structure" class="section level2">
@@ -371,19 +371,22 @@ emissions in tropical wetlands</p>
 <li><p>Hand # Height above nearest drainage for each sampled
 point</p></li>
 <li><p>Moisture # Raw data from TOSMT sensors, processed data from
-sensors (tms_data.csv) and graviometric moisture (Umidade_grv.csv,
-incomplete)</p></li>
+sensors (<code>tms_data.csv</code>) and graviometric moisture
+(<code>Umidade_grv.csv</code>, incomplete)</p></li>
 <li><p>Precipitation # Precipitation data from CHIRPS and
 WorldClim</p></li>
-<li><p>Soil # C, N and texture data for points, input data for
-clustering soils and classified soils to VWC calculation.</p></li>
-<li><p>Scripts # R scripts and R Markdown files</p></li>
+<li><p>Soil # C, N and texture data for points; input data for
+clustering soils; and classified soils to VWC calculation.</p></li>
+</ul></li>
+<li><p>Scripts # R scripts and R Markdown files</p>
+<ul>
 <li><p>PreliminarAnalyses # Preliminary data exploration. May need
-adaptations in datafra name and path to run.</p></li>
+adaptations in dataframe name and path to run.</p></li>
 <li><p>MoistureSoilClasses # Soils classification to generate input to
-TOMST processing. It creates the file Data_SoilClasses.csv</p></li>
+TOMST processing. It creates the file
+<code>Data_SoilClasses.csv</code></p></li>
 <li><p>TOMSTMoistureProcessing # Processing sensors raw data. It need
-the output Data_SoilClasses.csv</p></li>
+the output <code>Data_SoilClasses.csv</code></p></li>
 <li><p>TOMSTMoistureAnalyses # Correlating time series moisture data to
 flux. Analysis in development.</p></li>
 <li><p>ModelSEM # Piecewise Structural Equation Model to explain fluxes.

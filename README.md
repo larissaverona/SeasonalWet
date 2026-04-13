@@ -1,10 +1,6 @@
-
 ## SeasonalWet
 
-This repository contains the data processing and analysis workflow for
-analyzing carbon dynamics of seasonal wetlands in Cerrado. This is part
-of NSFDEB-NERC: Spatial and temporal tradeoffs in CO2 and CH4 emissions
-in tropical wetlands
+This repository contains the data processing and analysis workflow for analyzing carbon dynamics in seasonal wetlands in the Cerrado. This work is part of the NSF DEB--NERC project: \*Spatial and temporal tradeoffs in CO2 and CH4 emissions in tropical wetlands\*.
 
 ------------------------------------------------------------------------
 
@@ -18,42 +14,33 @@ in tropical wetlands
 
     -   Hand \# Height above nearest drainage for each sampled point
 
-    -   Moisture \# Raw data from TOSMT sensors, processed data from
-        sensors (tms_data.csv) and graviometric moisture
-        (Umidade_grv.csv, incomplete)
+    -   Moisture \# Raw data from TOSMT sensors, processed data from sensors (`tms_data.csv`) and graviometric moisture (`Umidade_grv.csv`, incomplete)
 
     -   Precipitation \# Precipitation data from CHIRPS and WorldClim
 
-    -   Soil \# C, N and texture data for points, input data for
-        clustering soils and classified soils to VWC calculation.
+    -   Soil \# C, N and texture data for points; input data for clustering soils; and classified soils to VWC calculation.
 
-    -    Scripts \# R scripts and R Markdown files
+-   Scripts \# R scripts and R Markdown files
 
-    -   PreliminarAnalyses \# Preliminary data exploration. May need
-        adaptations in datafra name and path to run.
+    -   PreliminarAnalyses \# Preliminary data exploration. May need adaptations in dataframe name and path to run.
 
-    -   MoistureSoilClasses \# Soils classification to generate input to
-        TOMST processing. It creates the file Data_SoilClasses.csv
+    -   MoistureSoilClasses \# Soils classification to generate input to TOMST processing. It creates the file `Data_SoilClasses.csv`
 
-    -   TOMSTMoistureProcessing \# Processing sensors raw data. It need
-        the output Data_SoilClasses.csv
+    -   TOMSTMoistureProcessing \# Processing sensors raw data. It need the output `Data_SoilClasses.csv`
 
-    -   TOMSTMoistureAnalyses \# Correlating time series moisture data
-        to flux. Analysis in development.
+    -   TOMSTMoistureAnalyses \# Correlating time series moisture data to flux. Analysis in development.
 
-    -   ModelSEM \# Piecewise Structural Equation Model to explain
-        fluxes. Main analysis for now.
+    -   ModelSEM \# Piecewise Structural Equation Model to explain fluxes. Main analysis for now.
 
--    Plots \# Generated outputs
+-   Plots \# Generated outputs
 
--    SeasonalWet.Rproj \# RStudio project file
+-   SeasonalWet.Rproj \# RStudio project file
 
 ------------------------------------------------------------------------
 
 ## Data availability
 
-The soil moisture data (`tms_data.csv`) used in this project are
-generated using the script `TOMSTMoistureProcessing.Rmd`.
+The soil moisture data (`tms_data.csv`) used in this project are generated using the script `TOMSTMoistureProcessing.Rmd`.
 
 Due to their large size, these data are not included in this repository.
 
