@@ -1,0 +1,272 @@
+---
+title: "Moisture Analysis"
+author: "Larissa Verona"
+date: "2025-01-14"
+output: html_document
+---
+
+Moisture Data Processing - TOMST sensor
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Pacotes
+```{r}
+rm(list=ls())
+library(dplyr)
+library(ggplot2)
+library(myClim)
+library(lubridate)
+```
+
+##Reading and processing data
+```{r}
+
+tms_file <- mc_read_files(
+  "Data/Moisture",
+  dataformat_name = "TOMST",
+  recursive = FALSE,
+  silent = TRUE
+)
+```
+
+Checking the data
+```{r}
+mc_info_count(tms_file) #quantos sensores e medidas temos
+mc_info_clean(tms_file) #limpando dados faltantes
+mc_info(tms_file) %>% View()
+mc_info_meta(tms_file) #sem metadados ainda
+tms_file <- mc_prep_TMSoffsoil(tms_file) #out of soil measuraments
+```
+
+Adding metadata
+```{r}
+meta_data <- read.csv("Sensores_Metadata.csv", sep=";") %>% mutate(locality_id=as.character(locality_id))
+
+str(meta_data)
+
+tms_file <- mc_prep_meta_locality(tms_file, meta_data, param_name = NULL) #função para associar os metadados aos dados de fluxo. 
+```
+
+Selecting only last measuraments
+```{r}
+tms_file <- mc_join(tms_file, comp_sensors = NULL) # utilizo quando tenho mais de um arquivo relaciondo ao mesmo sensor
+```
+
+Cliping for interested time window
+```{r}
+
+#change according required time window
+start <- as.POSIXct("2024-11-03", tz = "UTC")
+end <- as.POSIXct("2025-12-31", tz = "UTC")
+
+tms_file <- mc_prep_crop(tms_file, start, end)
+
+#excluding measurements affected by fire on ING
+
+# time window to exclude in ING
+fire_start <- as.POSIXct("2025-03-06", tz = "UTC") # one day before fire
+fire_end   <- as.POSIXct("2025-05-08", tz = "UTC") # one day after installing new sensors
+
+# afected sensors
+sensores_ing <- c("ING_p4a", "ING_p6a", "ING_p8a")
+sensores_ing2 <- c("ING_p2c", "ING_p10b")
+sensores_ing_ex <- c("ING_p2b", "ING_p4b",  "ING_p6b", "ING_p8b")
+
+
+# non-afected sensors
+localidades_todas <- names(tms_file$localities)
+localidades_outros <- setdiff(localidades_todas, sensores_ing)
+localidades_outros <- setdiff(localidades_outros, sensores_ing2)
+localidades_outros <- setdiff(localidades_outros, sensores_ing_ex)
+
+tms_outros <- tms_file %>% 
+  mc_filter(localities = localidades_outros)
+
+# ING data before fire
+tms_ing_antes <- tms_file %>% 
+  mc_filter(localities = sensores_ing) %>%
+  mc_prep_crop(start, fire_start)
+
+# ING data after fire
+tms_ing_depois <- tms_file %>% 
+  mc_filter(localities = sensores_ing) %>%
+  mc_prep_crop(fire_end, end)
+
+# ING P2c data (added after fire)
+tms_ING_P2c <- tms_file %>% 
+  mc_filter("ING_p2c") %>% mc_prep_crop(fire_end, end)
+
+# ING P10b Data (added after fire, in the next field campaign. New sensor)
+
+P10b_install  <- as.POSIXct("2025-06-04", tz = "UTC") #one day after P10b installing
+tms_ING_P10b <- tms_file %>% 
+  mc_filter("ING_p10b") %>% mc_prep_crop(P10b_install, end)
+
+# Joing all
+tms_file <- mc_prep_merge(list(tms_outros, tms_ing_antes, tms_ing_depois, tms_ING_P10b, tms_ING_P2c))
+```
+ 
+Correcting time
+```{r}
+tms_file_solar <- mc_prep_solar_tz(tms_file) #It doesn't seem to work
+
+```
+
+Converting moisture signal to volumetric soil water (according soil classes). Classes avaible at: https://ars.els-cdn.com/content/image/1-s2.0-S0168192318304118-mmc1.pdf
+
+Previous approach involving categorization of soil classes in the field.
+```{r}
+
+#I'm not using this anymore. 
+#tms_file <- mc_calc_vwc(tms_file, soiltype = "peat", localities = c("BBT_p10", "ING_p10a","ING_p10b", "7Q_p10", "VVT_p5", "VVT_p7", "VVT_p8", "CR_p9", "CR_p10"))
+
+#tms_file <- mc_calc_vwc(tms_file, soiltype = "loamy sand A", localities = c("ING_p8a","ING_p8b", "ING_p4a","ING_p4b", "VVT_p1"))
+
+#tms_file <- mc_calc_vwc(tms_file, soiltype = "sandy loam A", localities = c("ING_p2a", "ING_p2b", "ING_p2c", "ING_p6a", "ING_p6b","7Q_p1", "7Q_p3", "7Q_p5", "7Q_p7", "VVT_p4", "VVT_p10", "CR_p7"))
+
+#tms_file <- mc_calc_vwc(tms_file, soiltype = "loam", localities = c("BBT_p7", "BBT_p8", "BBT_p5", "BBT_p3"))
+
+#tms_file <- mc_calc_vwc(tms_file, soiltype = "sand", localities = c("CR_p3", "CR_p5"))
+```
+
+Current approach with classification based on soil data. See script MoistureSoilClasses.rmd
+```{r}
+class_soil <- read.csv("Data/Soils/Data_SoilClasses.csv")
+class_soil <- class_soil[1:25,]
+
+class_soil <- class_soil %>%
+  mutate(ID = recode(ID,
+                     "ING_p2" = "ING_p2a",
+                     "ING_p4" = "ING_p4a",
+                     "ING_p6" = "ING_p6a",
+                     "ING_p8" = "ING_p8a",
+                     "ING_p10" = "ING_p10a"))
+
+class_soil <- bind_rows(
+  class_soil,
+  class_soil %>%
+    filter(grepl("^ING_p(2|4|6|8|10)a$", ID)) %>%
+    mutate(ID = sub("a$", "b", ID))
+)
+
+class_soil <- bind_rows(
+  class_soil,
+  class_soil %>%
+    filter(ID == "ING_p2a") %>%
+    mutate(ID = sub("a$", "c", ID)))
+
+sand <- class_soil$ID[class_soil$classe == 1]
+lsA <- class_soil$ID[class_soil$classe == 2]
+lsB <- class_soil$ID[class_soil$classe == 3]
+slA <- class_soil$ID[class_soil$classe == 4]
+slB <- class_soil$ID[class_soil$classe == 5]
+loam <- class_soil$ID[class_soil$classe == 6]
+siltloam <- class_soil$ID[class_soil$classe == 7]
+peat <- class_soil$ID[class_soil$classe == 8]
+
+sand2 <- class_soil$ID[class_soil$classe2 == 1]
+lsA2 <- class_soil$ID[class_soil$classe2 == 2]
+lsB2 <- class_soil$ID[class_soil$classe2 == 3]
+slA2 <- class_soil$ID[class_soil$classe2 == 4]
+slB2 <- class_soil$ID[class_soil$classe2 == 5]
+loam2 <- class_soil$ID[class_soil$classe2 == 6]
+siltloam2 <- class_soil$ID[class_soil$classe2 == 7]
+peat2 <- class_soil$ID[class_soil$classe2 == 8]
+
+```
+
+VWC calculation
+```{r}
+tms_file <- mc_calc_vwc(tms_file, soiltype = "sand", localities = sand)
+
+tms_file <- mc_calc_vwc(tms_file, soiltype = "loamy sand A", localities = lsA)
+
+tms_file <- mc_calc_vwc(tms_file, soiltype = "loamy sand B", localities = lsB)
+
+tms_file <- mc_calc_vwc(tms_file, soiltype = "sandy loam A", localities = slA)
+
+tms_file <- mc_calc_vwc(tms_file, soiltype = "sandy loam B", localities = slB)
+
+tms_file <- mc_calc_vwc(tms_file, soiltype = "loam", localities = loam)
+
+tms_file <- mc_calc_vwc(tms_file, soiltype = "silt loam", localities = siltloam)
+
+tms_file <- mc_calc_vwc(tms_file, soiltype = "peat", localities = peat)
+```
+
+
+## Viewing
+
+```{r}
+tms_file %>% mc_filter(localities=c("VVT_p10", "VVT_p8", "VVT_p7", "VVT_p4", "VVT_p1")) %>% mc_plot_line(sensors = c("TMS_moist"))
+
+tms_file %>% mc_filter(localities=c("VVT_p10", "VVT_p8", "VVT_p7", "VVT_p4", "VVT_p1")) %>% mc_plot_line(sensors = c("VWC_moisture"))
+
+tms_file %>% mc_filter(localities=c("VVT_p10", "VVT_p8", "VVT_p7", "VVT_p4", "VVT_p1")) %>% mc_plot_raster(sensors = c("TMS_T1"))
+
+tms_file %>% mc_filter(localities=c("CR_p10", "CR_p9", "CR_p7", "CR_p5", "CR_p3")) %>% mc_plot_line(sensors = c("TMS_moist"))
+
+tms_file %>% mc_filter(localities=c("CR_p10", "CR_p9", "CR_p7", "CR_p5", "CR_p3")) %>% mc_plot_line(sensors = c("VWC_moisture"))
+
+tms_file %>% mc_filter(localities=c("CR_p10", "CR_p9", "CR_p7", "CR_p5", "CR_p3")) %>% mc_plot_raster(sensors = c("TMS_T1"))
+
+tms_file %>% mc_filter(localities=c("7Q_p10",  "7Q_p7", "7Q_p5", "7Q_p3", "7Q_p1")) %>% mc_plot_line(sensors = c("TMS_moist"))
+
+tms_file %>% mc_filter(localities=c("7Q_p10",  "7Q_p7", "7Q_p5", "7Q_p3", "7Q_p1")) %>% mc_plot_line(sensors = c("VWC_moisture"))
+
+tms_file %>% mc_filter(localities=c("7Q_p10",  "7Q_p7", "7Q_p5", "7Q_p3", "7Q_p1")) %>% mc_plot_raster(sensors = c("TMS_T1"))
+
+tms_file %>% mc_filter(localities=c("ING_p10a", "ING_p10b", "ING_p8a",  "ING_p8b", "ING_p6a","ING_p6b", "ING_p4a", "ING_p4b", "ING_p2a", "ING_p2b", "ING_p2c")) %>% mc_plot_line(sensors = c("TMS_moist"))
+
+tms_file %>% mc_filter(localities=c("ING_p10a", "ING_p10b", "ING_p8a",  "ING_p8b", "ING_p6a","ING_p6b", "ING_p4a", "ING_p4b", "ING_p2a", "ING_p2b", "ING_p2c")) %>% mc_plot_line(sensors = c("VWC_moisture"))
+
+tms_file %>% mc_filter(localities=c("ING_p10",  "ING_p8", "ING_p6", "ING_p4", "ING_p2")) %>% mc_plot_raster(sensors = c("TMS_T1"))
+
+tms_file %>% mc_filter(localities=c("BBT_p10",  "BBT_p8", "BBT_p7", "BBT_p5", "BBT_p3")) %>% mc_plot_line(sensors = c("TMS_moist"))
+
+tms_file %>% mc_filter(localities=c("BBT_p10",  "BBT_p8", "BBT_p7", "BBT_p5", "BBT_p3")) %>% mc_plot_line(sensors = c("VWC_moisture"))
+
+tms_file %>% mc_filter(localities=c("BBT_p10",  "BBT_p8", "BBT_p7", "BBT_p5", "BBT_p3")) %>% mc_plot_raster(sensors = c("TMS_T1"))
+```
+
+
+Daily aggregation
+
+```{r}
+tms_agg <- tms_file %>% mc_agg(tms_file, fun = c("mean"), period = "day", min_coverage = 0.8, use_utc=F)
+
+tms_agg %>% mc_filter(localities=c("VVT_p10", "VVT_p8", "VVT_p7", "VVT_p4", "VVT_p1")) %>% mc_plot_line(sensors = c("VWC_moisture_mean"))
+
+tms_agg %>% mc_filter(localities=c("CR_p10", "CR_p9", "CR_p7", "CR_p5", "CR_p3")) %>% mc_plot_line(sensors = c("VWC_moisture_mean"))
+
+tms_agg %>% mc_filter(localities=c("7Q_p10",  "7Q_p7", "7Q_p5", "7Q_p3", "7Q_p1")) %>% mc_plot_line(sensors = c("VWC_moisture_mean"))
+
+tms_agg %>% mc_filter(localities=c("ING_p10",  "ING_p8", "ING_p6", "ING_p4", "ING_p2")) %>% mc_plot_line(sensors = c("VWC_moisture_mean"))
+
+tms_agg %>% mc_filter(localities=c("BBT_p10",  "BBT_p8", "BBT_p7", "BBT_p5", "BBT_p3")) %>% mc_plot_line(sensors = c("VWC_moisture_mean"))
+```
+
+## General analyses
+
+Nice data, I can get interisting things.
+```{r}
+temp_env  <- mc_env_temp(tms_file, period = "all", min_coverage = 0.8)
+moist_env <- mc_env_moist(tms_file, period = "all", min_coverage = 0.8)
+
+```
+
+## Getting a data frame
+```{r}
+
+tms_agg_hour <- tms_file %>% mc_agg(tms_file, fun = c("mean"), period = "hour", min_coverage = 0.25, use_utc=T)
+
+
+tms_long<- mc_reshape_long(tms_file, use_utc = T) %>% mutate(sensor_name = as.factor(sensor_name), height = as.factor(height))  
+tms_long <- tms_long %>% select(-c(serial_number, height))
+
+write.csv(tms_long,"Data/Moisture/tms_data.csv")
+
+levels(tms_long$height)
+```

@@ -1,0 +1,2001 @@
+---
+title: "Analises Preliminares"
+author: "Larissa Verona"
+date: "2024-09-19"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Analise preliminares de comparação de fluxos em gradiente de solo/umidade em campos úmidos sazonais.
+Amostramos 5 gradientes de umidade/solo a fim de compreender quais mecanismos determinam a emissão de CO2 e CH4 nestes ecossistemas. 
+
+  ## Pacotes
+```{r}
+#rm(list=ls())
+library(dplyr)
+library(ggplot2)
+library(tidyr)
+library(lme4)
+library(nlme)
+library(ggthemes)
+library(ggpubr)
+library(performance)
+library(MASS)
+library(sjPlot)
+library(MuMIn)
+library(plotly)
+library(lubridate)
+library(ggeffects)
+library(cowplot)
+library (viridis)
+library(runner)
+
+library(randomForest)
+library(xgboost)
+library(caret) #para grid search
+
+```
+
+## Dados
+```{r}
+setwd("G:/Meu Drive/1. Meu Computador/Pesquisa/Cary Felowship/Dados/Processado")
+
+#Setembro
+vvt_set24 <- read.csv("vvt_set24.csv", sep=";", skip=1) %>% 
+  slice(-1) %>% 
+  mutate(area="vvt", month="set24")  %>%
+  mutate(datetime= lubridate::dmy_hm(datetime))
+
+seteq_set24 <- read.csv("7q_set24.csv", sep=";", skip=1) %>% 
+  slice(-1) %>% 
+  mutate(area="seteq", month="set24")  %>%
+  mutate(datetime= lubridate::dmy_hm(datetime))
+
+bbt_set24 <- read.csv("bbt_set24.csv", sep=";", skip=1) %>% 
+  slice(-1) %>% 
+  mutate(area="bbt", month="set24")  %>%
+  mutate(datetime= lubridate::dmy_hm(datetime))
+
+cr_set24 <- read.csv("cr_set24.csv", sep=";", skip=1) %>% 
+  slice(-1) %>% 
+  mutate(area="cr", month="set24")  %>%
+  mutate(datetime= lubridate::dmy_hm(datetime))
+
+ing_set24 <- read.csv("ing_set24.csv", sep=";", skip=1) %>% 
+  slice(-1) %>% 
+  mutate(area="ing", month="set24")  %>%
+  mutate(datetime= lubridate::dmy_hm(datetime))
+
+#Novembro
+
+vvt_nov24 <- read.csv("vvt_nov24.csv", sep=";", skip=1) %>% 
+  slice(-1) %>% 
+  mutate(area="vvt", month="nov24")  %>%
+  mutate(datetime= lubridate::dmy_hm(datetime))
+
+seteq_nov24 <- read.csv("7q_nov24.csv", sep=";", skip=1) %>% 
+  slice(-1) %>% 
+  mutate(area="seteq", month="nov24")  %>%
+  mutate(datetime= lubridate::dmy_hm(datetime))
+
+bbt_nov24 <- read.csv("bbt_nov24.csv", sep=";", skip=1) %>% 
+  slice(-1) %>% 
+  mutate(area="bbt", month="nov24")  %>%
+  mutate(datetime= lubridate::dmy_hm(datetime))
+
+cr_nov24 <- read.csv("cr_nov24.csv", sep=";",  skip=1) %>% 
+  slice(-1) %>% 
+  mutate(area="cr", month="nov24") %>%
+  mutate(datetime= lubridate::dmy_hm(datetime))
+
+ing_nov24 <- read.csv("ing_nov24.csv", sep=";", skip=1) %>% 
+  slice(-1) %>% 
+  mutate(area="ing", month="nov24") %>%
+  mutate(datetime= lubridate::dmy_hm(datetime))
+
+
+#Fev 
+vvt_fev25 <- read.csv("vvt_fev25.csv", sep=";", skip=1) %>% 
+  slice(-1) %>% 
+  mutate(area="vvt", month="fev25") %>%
+  mutate(datetime= lubridate::dmy_hm(datetime))
+
+seteq_fev25 <- read.csv("7q_fev25.csv", sep=";", skip=1) %>% 
+  slice(-1) %>% 
+  mutate(area="seteq", month="fev25") %>%
+  mutate(datetime= lubridate::dmy_hm(datetime))
+
+bbt_fev25 <- read.csv("bbt_fev25.csv", sep=";", skip=1) %>% 
+  slice(-1) %>% 
+  mutate(area="bbt", month="fev25") %>%
+  mutate(datetime= lubridate::dmy_hm(datetime))
+
+cr_fev25 <- read.csv("cr_fev25.csv", sep=";",  skip=1) %>% 
+  slice(-1) %>% 
+  mutate(area="cr", month="fev25") %>%
+  mutate(datetime= lubridate::dmy_hm(datetime))
+
+ing_fev25 <- read.csv("ing_fev25.csv", sep=";", skip=1) %>% 
+  slice(-1) %>% 
+  mutate(area="ing", month="fev25") %>%
+  mutate(datetime= lubridate::dmy_hm(datetime))
+
+#Jun
+vvt_jun25 <- read.csv("vvt_jun25.csv", sep=";", skip=1) %>% 
+  slice(-1) %>% 
+  mutate(area="vvt", month="jun25") %>%
+  mutate(datetime= lubridate::dmy_hm(datetime))
+
+seteq_jun25 <- read.csv("7q_jun25.csv", sep=";", skip=1) %>% 
+  slice(-1) %>% 
+  mutate(area="seteq", month="jun25") %>%
+  mutate(datetime= lubridate::dmy_hm(datetime))
+
+bbt_jun25 <- read.csv("bbt_jun25.csv", sep=";", skip=1) %>% 
+  slice(-1) %>% 
+  mutate(area="bbt", month="jun25") %>%
+  mutate(datetime= lubridate::dmy_hm(datetime))
+
+cr_jun25 <- read.csv("cr_jun25.csv", sep=";",  skip=1) %>% 
+  slice(-1) %>% 
+  mutate(area="cr", month="jun25") %>%
+  mutate(datetime= lubridate::dmy_hm(datetime))
+
+ing_jun25 <- read.csv("ing_jun25.csv", sep=";", skip=1) %>% 
+  slice(-1) %>% 
+  mutate(area="ing", month="jun25") %>%
+  mutate(datetime= lubridate::dmy_hm(datetime))
+
+#set
+vvt_set25 <- read.csv("vvt_set25.csv", sep=";", skip=1) %>% 
+  slice(-1) %>% 
+  mutate(area="vvt", month="set25") %>% 
+  rename(datetime=DATE_TIME.initial_value) %>%
+  mutate(datetime= lubridate::dmy_hm(datetime)) 
+
+seteq_set25 <- read.csv("7q_set25.csv", sep=",", skip=1) %>% 
+  slice(-1) %>% 
+  mutate(area="seteq", month="set25") %>% 
+  rename(datetime=DATE_TIME.initial_value) %>% mutate(datetime= lubridate::ymd_hms(datetime)) 
+
+bbt_set25 <- read.csv("bbt_set25.csv", sep=",", skip=1) %>% 
+  slice(-1) %>% 
+  mutate(area="bbt", month="set25") %>% 
+  rename(datetime=DATE_TIME.initial_value) %>% mutate(datetime= lubridate::ymd_hms(datetime)) 
+
+cr_set25 <- read.csv("cr_set25.csv", sep=",",  skip=1) %>% 
+  slice(-1) %>% 
+  mutate(area="cr", month="set25") %>% 
+  rename(datetime=DATE_TIME.initial_value) %>% mutate(datetime= lubridate::ymd_hms(datetime)) 
+
+ing_set25 <- read.csv("ing_set25.csv", sep=",", skip=1) %>% 
+  slice(-1) %>% 
+  mutate(area="ing", month="set25") %>% 
+  rename(datetime=DATE_TIME.initial_value) %>% mutate(datetime= lubridate::ymd_hms(datetime)) 
+
+#dez
+vvt_dez25 <- read.csv("vvt_dez25.csv", sep=",", skip=1) %>% 
+  slice(-1) %>% 
+  mutate(area="vvt", month="dez25") %>% 
+  rename(datetime=DATE_TIME.initial_value) %>% mutate(datetime= lubridate::ymd_hms(datetime)) 
+
+seteq_dez25 <- read.csv("7q_dez25.csv", sep=",", skip=1) %>% 
+  slice(-1) %>% 
+  mutate(area="seteq", month="dez25") %>% 
+  rename(datetime=DATE_TIME.initial_value) %>% mutate(datetime= lubridate::ymd_hms(datetime)) 
+
+bbt_dez25 <- read.csv("bbt_dez25.csv", sep=",", skip=1) %>% 
+  slice(-1) %>% 
+  mutate(area="bbt", month="dez25") %>% 
+  rename(datetime=DATE_TIME.initial_value) %>% mutate(datetime= lubridate::ymd_hms(datetime)) 
+
+cr_dez25 <- read.csv("cr_dez25.csv", sep=",",  skip=1) %>% 
+  slice(-1) %>% 
+  mutate(area="cr", month="dez25") %>% 
+  rename(datetime=DATE_TIME.initial_value) %>% mutate(datetime= lubridate::ymd_hms(datetime)) 
+
+ing_dez25 <- read.csv("ing_dez25.csv", sep=",", skip=1) %>% 
+  slice(-1) %>% 
+  mutate(area="ing", month="dez25") %>% 
+  rename(datetime=DATE_TIME.initial_value) %>% mutate(datetime= lubridate::ymd_hms(datetime)) 
+```
+
+Juntando tudo em uma planilha
+```{r}
+df <- rbind(vvt_set24, seteq_set24, bbt_set24, cr_set24, ing_set24, 
+            vvt_nov24, seteq_nov24, bbt_nov24, cr_nov24, ing_nov24, 
+            vvt_fev25, seteq_fev25, bbt_fev25, cr_fev25, ing_fev25,
+            vvt_jun25, seteq_jun25, bbt_jun25, cr_jun25, ing_jun25,
+            vvt_set25, seteq_set25, bbt_set25, cr_set25, ing_set25,
+            vvt_dez25, seteq_dez25, bbt_dez25, cr_dez25, ing_dez25) %>% 
+  mutate_at(vars(3, 4, 7:14), as.numeric) %>%
+  mutate_at(vars(2,16,17), as.factor) %>%
+  rename(point = COMMENT, swc = SWC_2.mean, ts = TS_2.mean, fch4 = FCH4_DRY, fco2=FCO2_DRY) %>%
+  mutate(fch4_nu = (fch4/1000)*86400) %>%
+  mutate(month=factor(month, levels=c("set24", "nov24", "fev25", "jun25", "set25", "dez25")))
+
+str(df)
+  
+```
+
+### Solos
+
+Adicionando informações categóricas de solos (abordagem antiga)
+
+```{r}
+ soil_class <- data.frame(
+   area=c("bbt_P10", "ing_P10", "ing_P9", "seteq_P10", "vvt_P5", "vvt_P6", "vvt_P7", "vvt_P8", "cr_P9", "cr_P10", "cr_P8" ),
+   soil=rep("peat",11)) %>% 
+  rbind(data.frame(
+    area=c("bbt_P9", "ing_P8","seteq_P7", "seteq_P6", "seteq_P8", "seteq_P9", "vvt_P4", "vvt_P10", "vvt_P2", "vvt_P3", "cr_P7"), 
+    soil=rep("medium organic",1))) %>%
+  rbind(data.frame(
+    area=c("ing_P4", "ing_P3", "vvt_P1", "ing_P7","cr_P6", "vvt_P9"), 
+    soil=rep("medium sand",6))) %>%
+  rbind(data.frame(
+    area= c("ing_P2", "ing_P6", "seteq_P1","seteq_P2", "seteq_P3","seteq_P4", "seteq_P5", "ing_P5", "ing_P1"),  
+    soil=rep("silt+sand",9))) %>%
+  rbind(data.frame(
+    area= c("bbt_P7", "bbt_P8", "bbt_P6","bbt_P5", "bbt_P3", "bbt_P4"), 
+    soil=rep("clay",6))) %>%
+  rbind(data.frame(
+    area= c("cr_P3", "cr_P5","cr_P4"), 
+    soil=rep("sand",3))) 
+ 
+soil_class[c("area","point")] <- stringr::str_split_fixed(soil_class$area, '_', 2)
+  
+df <- left_join(df, soil_class, by=c("area", "point")) %>% mutate(area=as.factor(area), point=factor(point, levels=c("P1", "P2", "P3", "P4","P5","P6","P7","P8", "P9", "P10")))
+str(df)
+```
+
+Adicionando informações categoricas de textura do solo
+
+```{r}
+ soil_class2 <- data.frame(
+   area=c("bbt_P10", "bbt_P9", "bbt_P8", "bbt_P7", "bbt_P6", "bbt_P5", "bbt_P4", "bbt_P3", "ing_P10", "ing_P9"),
+   soil2=rep("clay",10)) %>% 
+  rbind(data.frame(
+    area=c("ing_P8","ing_P7", "ing_P5", "ing_P4", "ing_P3", "seteq_P6", "seteq_P8", "vvt_P1", "vvt_P2", "vvt_P3", "vvt_P4", "vvt_P9", "cr_P6", "cr_P5", "cr_P4", "cr_P3"), 
+    soil2=rep("sand",16))) %>%
+  rbind(data.frame(
+    area=c("ing_P2", "seteq_P4", "seteq_P7", "seteq_P9", "seteq_P10", "vvt_P6", "vvt_P7","cr_P8"), 
+    soil2=rep("silt",8))) %>%
+  rbind(data.frame(
+    area= c("ing_P6", "ing_P1", "seteq_P1","seteq_P2", "seteq_P3", "seteq_P5", "vvt_P5", "vvt_P8", "vvt_P10", "cr_P10", "cr_P7", "cr_P9"),  
+    soil2=rep("silt+sand",12)))
+ 
+soil_class2[c("area","point")] <- stringr::str_split_fixed(soil_class2$area, '_', 2)
+  
+df <- left_join(df, soil_class2, by=c("area", "point")) %>% mutate(area=as.factor(area), point=factor(point, levels=c("P1", "P2", "P3", "P4","P5","P6","P7","P8", "P9", "P10")))
+str(df)
+```
+
+Adicionando dados solo
+
+```{r}
+setwd("G:/Meu Drive/1. Meu Computador/Pesquisa/Cary Felowship/Dados/Solos")
+solos <- read.csv("Solo.csv", sep=";")
+
+df <- left_join(df, solos, by=c("area", "point"))
+```
+
+### HAND
+Adicionando dados HAND
+```{r}
+setwd("G:/Meu Drive/1. Meu Computador/Pesquisa/Cary Felowship/Dados/HAND")
+hand <- read.csv("Flux_points_HAND.csv", sep=";") %>% 
+  select("area", "point", "hand") %>% 
+  group_by(area) %>%
+  mutate(hand_p = (hand-min(hand))/(max(hand)-min(hand)))
+
+df <- left_join(df, hand, by=c("area", "point")) %>% mutate(area=factor(area),
+       point=factor(point, levels=c("P1", "P2", "P3", "P4", "P5", "P6", "P7", "P8", "P9", "P10")))
+
+
+```
+
+### Plots Exploratórios
+
+Olhando apenas para a distribuição dos pontos
+```{r}
+  plot(df$fco2, col=df$area, legend=T)
+legend("topright", legend=levels(df$area), 
+       col=1:length(unique(df$area)), pch=16)
+
+plot(df$fch4, col=df$area, legend=T)
+legend("topright", legend=levels(df$area), 
+       col=1:length(unique(df$area)), pch=16) 
+#parece ter uns três pontos deslocados aqui
+```
+
+Olhando emissão média em diferente estações:
+
+```{r}
+df %>%
+  ggplot(aes(x=month, y=fco2)) +
+  geom_boxplot() +
+  stat_compare_means()+
+  theme_clean()
+setwd("G:/Meu Drive/1. Meu Computador/Pesquisa/Cary Felowship/Plots")
+ggsave("Co2_month.png", unit="cm", width = 20, height = 15)
+
+df %>%
+  ggplot(aes(x=C, y=fco2)) +
+  geom_point() +
+  geom_smooth(method="lm")+
+  stat_cor()+
+  facet_wrap(~month) +
+  theme(legend.position = element_blank())+
+  theme_clean()
+
+setwd("G:/Meu Drive/1. Meu Computador/Pesquisa/Cary Felowship/Plots")
+ggsave("Co2_carbon.png", unit="cm", width = 20, height = 15)
+
+df %>%
+  ggplot(aes(x=hand_p, y=fco2)) +
+  geom_point() +
+  geom_smooth(method="lm")+
+  stat_cor()+
+  facet_wrap(~month) +
+  theme_clean()
+
+setwd("G:/Meu Drive/1. Meu Computador/Pesquisa/Cary Felowship/Plots")
+ggsave("Co2_hand.png", unit="cm", width = 20, height = 15)
+
+
+df %>%
+  ggplot(aes(x=month, y=fch4)) +
+  geom_boxplot()+
+  stat_compare_means()+
+  theme_clean()
+setwd("G:/Meu Drive/1. Meu Computador/Pesquisa/Cary Felowship/Plots")
+ggsave("Ch4_month.png", unit="cm", width = 20, height = 15)
+
+df %>%
+  ggplot(aes(x=hand_p, y=fch4)) +
+  geom_point() +
+  geom_smooth(method="lm")+
+  stat_cor()+
+  facet_wrap(~month)
+setwd("G:/Meu Drive/1. Meu Computador/Pesquisa/Cary Felowship/Plots")
+ggsave("CH4_hand.png", unit="cm", width = 20, height = 15)
+
+df %>%
+  ggplot(aes(x=C, y=fch4)) +
+  geom_point() +
+  geom_smooth(method="lm")+
+  stat_cor()+
+  facet_wrap(~month)
+setwd("G:/Meu Drive/1. Meu Computador/Pesquisa/Cary Felowship/Plots")
+ggsave("CH4_carbon.png", unit="cm", width = 20, height = 15)
+
+```
+
+Olhando para relação com solo
+
+```{r}
+df %>%
+  ggplot(aes(x=area, y=fco2, color=month)) +
+  geom_boxplot()
+
+df %>%
+  ggplot(aes(x=area, y=fch4, color=month)) +
+  geom_boxplot()
+
+df %>% group_by(area,month) %>% summarise(mean(fch4_nu))
+```
+
+```{r}
+ch4 <- df %>%
+  ggplot(aes(x=hand_p, y=fch4, color=month)) +
+  geom_point()+
+    geom_smooth(method="lm", fill="gray80")+
+  #stat_cor()+
+  facet_wrap(~area, nrow = 1) +
+  theme_clean()+
+    ylab(expression("CH"[4]~" flux nmol/m²s"))+
+  xlab("Standardized HAND") + 
+  theme(axis.title = element_text(size=14),
+        axis.text.x = element_text(size=9),
+        axis.text.y = element_text(size=10),
+        plot.background = element_blank())
+
+co2 <- df %>%
+  ggplot(aes(x=hand_p, y=fco2, color=month)) +
+  geom_point()+
+  geom_smooth(method="lm", se=T, fill="gray80")+
+  #stat_cor()+
+  facet_wrap(~area, nrow = 1) +
+  theme_clean()+
+    ylab(expression("CO"[2]~" flux µmol/m²s"))+
+  xlab("") + 
+  theme(axis.title = element_text(size=14),
+        axis.text.x = element_text(size=9),
+        axis.text.y = element_text(size=10),
+        plot.background = element_blank())
+
+co2/ch4
+
+setwd("G:/Meu Drive/1. Meu Computador/Pesquisa/Cary Felowship/Plots")
+
+ggsave("flux_hand_point.png", unit="cm", width = 25, height = 15)  
+
+df %>%
+  ggplot(aes(x=C, y=fco2, color=month)) +
+  geom_point()+
+  geom_smooth(method="lm")+
+  stat_cor()
+```
+
+
+```{r}
+e <- df %>%
+  mutate(month=recode(month,
+                    "jun"="Jun",
+                    "set"="Set",
+                    "nov"="Nov",
+                    "fev"="Fev"),
+         soil = recode(soil,
+                       "clay" = "Argila",
+                       "medium organic" = "Parc Orgânico",
+                       "medium sand" = "Parc Areia", 
+                     "peat" = "Turfa",
+                     "sand" = "Areia",
+                     "silt+sand" = "Silte + Areia")) %>%
+  
+  ggplot(aes(x=soil, y=fco2, fill=month)) +
+  geom_boxplot(color="grey30") +
+  theme_clean() +
+  #stat_compare_means(label="p.signif") +
+  ylab(expression("Fluxo de CO"[2]~"(µmol/m²s)")) +
+  xlab("") +
+  labs(fill="Mês") +
+  theme(panel.background = element_blank(),
+        plot.background = element_blank(),
+        panel.border = element_blank(),
+        legend.background = element_blank(),
+        axis.title = element_text(size=12),
+        axis.text = element_text(size=10),
+         legend.text = element_text(size=11))
+  
+
+ 
+f <-  df %>%
+  mutate(month=recode(month,
+                    "jun"="Jun",
+                    "set"="Set",
+                    "nov"="Nov",
+                    "fev"="Fev"),
+         soil = recode(soil,
+                       "clay" = "Argila",
+                       "medium organic" = "Parc Orgânico",
+                       "medium sand" = "Parc Areia", 
+                     "peat" = "Turfa",
+                     "sand" = "Areia",
+                     "silt+sand" = "Silte + Areia")) %>%
+  
+ ggplot(aes(x=soil, y=fch4, fill=month)) +
+  geom_boxplot(color="grey30") +
+  geom_hline(yintercept=0, linetype="dotted")+
+  #stat_compare_means(label="p.signif") +
+    theme_clean() +
+  ylab(expression("Fluxo de CH"[4]~"(nmol/m²s)")) +
+  xlab("") +
+  labs(fill="Mês")+
+  theme(panel.background = element_blank(),
+        plot.background = element_blank(),
+        panel.border = element_blank(),
+        legend.background = element_blank(),
+        axis.title = element_text(size=12),
+        axis.text = element_text(size=10),
+        legend.text = element_text(size=11))
+ 
+g <- ggpubr::ggarrange(e,f, ncol=1, common.legend = T)
+```
+
+```{r}
+setwd("G:/Meu Drive/1. Meu Computador/Pesquisa/Cary Felowship/Plots")
+
+ggsave(plot=g, filename = "Fluxo_soil.jpeg", units = "mm", width = 220, height = 160)
+```
+
+
+
+Olhando para a relação com umidade do solo
+Cores
+```{r}
+cores_frio_quente <- c(
+  "#313695",  # azul escuro
+  "#4575b4",
+  "#74add1",
+  "#abd9e9",
+  "#e0f3f8",
+  "#fee090",
+  "#fdae61",
+  "#f46d43",
+  "#d73027",
+  "#a50026"   # vermelho escuro
+)
+```
+
+
+CO2
+```{r}
+library(ggthemes)
+a <- 
+  df %>% 
+  ggplot(aes(x=swc, y=fco2)) +
+  geom_point(aes(color=C)) + 
+  geom_smooth() +
+  theme_bw() +
+  ylab(expression("CO"[2]~" Flux (µmol/m²s)")) +
+  xlab("Soil Moisture (m³/m³)") +
+  labs(color="Carbon Content (%)")+
+  theme(axis.text = element_text(size=10),
+        axis.title = element_text(size=12)) +
+  scale_color_viridis(option="inferno",direction = -1)
+
+
+b <- 
+  df %>% 
+  #filter (C < 10) %>%
+  ggplot(aes(x=swc, y=fch4)) +
+  geom_point(aes(color=C)) + 
+  geom_smooth() +
+  theme_bw() +
+  geom_hline(yintercept=0, linetype="dotted")+
+  ylab(expression("CH"[4]~" Flux (nmol/m²s)")) +
+  xlab("Soil Moisture (m³/m³)") +
+  labs(color="Carbon Content (%)")+
+  theme(axis.text = element_text(size=10),
+        axis.title = element_text(size=12)) +
+  scale_color_viridis(option="inferno",direction = -1) #+
+  #ggtitle("Carbon < 10%")
+
+c <- ggpubr::ggarrange(a,b, common.legend = F)
+```
+
+
+```{r}
+setwd("G:/Meu Drive/1. Meu Computador/Pesquisa/Cary Felowship/Plots")
+
+ggsave(plot=c, filename = "Fluxo_umid.jpeg", units = "mm", width = 250, height = 120)
+```
+
+
+```{r}
+df %>% 
+  ggplot(aes(x=C, y=fch4)) +
+  geom_point(aes(color=swc)) + 
+  geom_smooth(color="red") +
+  theme_bw() +
+  ylab("CH4 flux (nmol/m²s)") +
+  xlab("Soil Carbon (%)") +
+  stat_cor()+
+  theme(axis.text = element_text(size=13),
+axis.title = element_text(size=13))+
+  scale_color_viridis(option="inferno",direction = -1)
+  
+df %>% filter(swc<0.8 & swc >0.10) %>%
+  ggplot(aes(x=C, y=fco2)) +
+  geom_point() + 
+  stat_cor()+
+  geom_smooth() +
+  stat_cor() +
+  theme_bw() +
+  ggtitle("Soil Moisture Between 10-80%") +
+  ylab("CO2 flux") +
+  xlab("Carbon Content")
+
+ 
+
+df %>%
+  ggplot(aes(x=ts, y=fch4)) +
+  geom_point(aes(color=swc)) + 
+  geom_smooth() +
+  geom_hline(yintercept=0, linetype="dotted")+
+  theme_bw() +
+  ylab("CH4 flux (nmol/m²s)") +
+  xlab("Temperatura do Solo (ºC)") +
+  theme(axis.text = element_text(size=13),
+        axis.title = element_text(size=13)) 
+
+
+d <- df %>% 
+  mutate(point=factor(point, levels=c("P1", "P2", "P3", "P4", "P5", "P6", "P7", "P8", "P9", "P10")),
+             area = recode(area,
+                  "bbt" = "BBT",
+                  "cr" = "CR",
+                  "ing" = "ING",
+                  "seteq" = "7Q",
+                  "vvt" = "VVT")) %>%
+  ggplot(aes(x=swc, y=fco2, color=point)) +
+  geom_point() + 
+  geom_smooth( method = "lm", se = F) +
+  facet_wrap(~area) +
+  theme_cowplot() +
+  scale_color_manual(values= cores_frio_quente) +
+  xlab("Umidade do Solo (m³/m³)") +
+  ylab(expression("Fluxo de CO"[2]~"(µmol/m²s)")) +
+  labs(color="Pontos") +
+   theme(axis.text = element_text(size=10),
+        axis.title = element_text(size=12))
+```
+
+
+```{r}
+setwd("G:/Meu Drive/1. Meu Computador/Pesquisa/Cary Felowship/Plots")
+
+ggsave(plot=d, filename = "Fluxo_umid_point.jpeg", units = "mm", width = 220, height = 150)
+```
+
+```{r}
+df %>%
+  ggplot(aes(x=swc, y=fco2, color=soil)) +
+  geom_point() + 
+  geom_smooth() +
+  facet_wrap(~soil) +
+  theme_clean()
+       
+```
+ 
+Olhando para a posição no gradiente
+
+```{r}
+df %>% ggplot(aes(x=hand_p, y=fco2, color=month)) +
+  geom_point() +
+  geom_smooth(method="lm")+
+  stat_cor()
+  #facet_wrap(~area, scales="free")
+```
+
+### Umidade 
+
+Comparando os dados de umidade do Licor, TOMST e Graviométrica
+
+Umidade TOMST
+```{r}
+  setwd("G:/Meu Drive/1. Meu Computador/Pesquisa/Cary Felowship/Dados")
+tms_data <- read.csv2("Umidade/tms_data.csv", sep=",") %>%
+  mutate(value=as.numeric(value)) %>%
+  pivot_wider(names_from = sensor_name,
+              values_from = value,
+              id_cols = c(locality_id, datetime)) %>%
+  separate(locality_id, 
+           into=c("area", "point"), 
+           sep= "_") %>%
+  mutate( point=toupper(point),
+         area=tolower(area),
+         area=case_when(area =="7q"~"seteq",
+         TRUE ~ as.character(area)),
+         area=as.factor(area))
+
+tms_data <- tms_data %>% 
+  mutate(datetime = if_else(
+    stringr::str_detect(datetime, " "),          # já tem hora?
+    datetime,
+    paste0(datetime, " 00:00:00")          # adiciona hora
+  )) %>% 
+  mutate(datetime = ymd_hms(datetime))    # converte para POSIXct
+  
+tms_data <- tms_data %>%
+  mutate(
+    point = case_when(
+      area == "ing" & point == "P10A" ~ "P10",
+      area == "ing" & point == "P10B" ~ "P10",
+      area == "ing" & point == "P2C"  ~ "P2",
+      area == "ing" & point == "P2A"  ~ "P2",
+      area == "ing" & point == "P4A"  ~ "P4",
+      area == "ing" & point == "P6A"  ~ "P6",
+      area == "ing" & point == "P8A"  ~ "P8",
+      TRUE ~ point
+    )
+  ) %>%
+  filter(!(area == "ing" & point %in% c("P2B", "P4B", "P6B", "P8B")))
+  
+tms_data <- tms_data %>% mutate(datetime=datetime-hours(3),
+                                point=as.factor(point)) #ajustando de UTC para GMT-3
+str(tms_data)
+tms_data <- tms_data %>% filter(off_soil==0) 
+```
+
+Umidade Graviométrica
+```{r}
+  grv_data <- read.csv("Umidade/Umidade_grv.csv",dec = ",") %>%
+  select(Mes, Area, Ponto, X.umidade, data) %>% 
+  rename(grv=X.umidade,
+         area=Area,
+         point=Ponto,
+         month=Mes) %>%
+  mutate(area=case_when(area =="7q"~"seteq",
+         TRUE ~ as.character(area)),
+         point=paste0("P", point),
+         data=dmy(data))
+        
+```
+
+
+Juntando os dados 
+```{r}
+library(data.table)
+
+# 1) Transforme seus data.frames em data.tables
+df_dt <- setDT(df)
+tms_data_dt <- setDT(tms_data)
+
+
+# 2) Defina chave (key) em tms_data para fast joins
+tms_data_dt <- setkey(tms_data_dt, area, point, datetime)
+
+# 3) Faça o rolling join: para cada linha de df, traga TMS_moist_mean
+#    onde tms_data$datetime seja o último valor ≤ df$datetime
+df2 <- df_dt[, c("TMS_moist", "VWC_moisture", "TMS_T1", "TMS_T2") := 
+     tms_data_dt[.SD,                           # pega tms_data "sobre" cada linha de df
+               .(TMS_moist,             # as colunas que queremos
+                 VWC_moisture,
+                 TMS_T1,
+                 TMS_T2),
+               on = .(area, point, datetime), # faz o join por area, point e datetime
+               roll = TRUE                    # o rolling join (último datetime ≤ o de df)
+     ]
+]
+
+
+```
+
+Plotando
+
+```{r}
+
+df2 %>%
+  ggplot(aes(x=swc, y=TMS_moist)) +
+  geom_point()+
+  geom_smooth(method="lm") +
+  stat_cor() + 
+  facet_wrap(~area)
+
+df2 %>%
+  ggplot(aes(x=swc, y=VWC_moisture)) +
+  geom_point()+
+  geom_smooth(method="lm") +
+  stat_cor() +
+  facet_wrap(~area)
+
+
+df2 %>%
+  ggplot(aes(x=ts, y=TMS_T2)) +
+  geom_point()+
+  geom_smooth(method="lm") +
+  stat_cor() +
+  facet_wrap(~area)
+  
+df2 %>% select(area, point, month, TMS_moist_mean) %>% drop_na() %>% group_by(month, area, point) %>% summarise(n()) %>% View()
+```
+
+Predizendo a umidade pelos valores medidos em campo
+```{r}
+mod_mt <- lmer(TMS_moist ~ swc + (1|point2), data=df2 %>% mutate(point2 = paste(area,point)))
+tab_model(mod_mt)
+
+mod_vwc <- lmer(VWC_moisture ~ swc + (1|point2), data=df2 %>% mutate(point2 = paste(area,point)))
+
+tab_model(mod_vwc)
+
+```
+
+
+Predizendo dados onde não tenho TOMST através de modelos propostos no script Teste TOMST-LICOR
+
+
+Por enquanto não tenho os modelos para os Couros, entao vou tentar predizer com o que tenho
+
+Predizendo umidade couros
+```{r}
+cr_df <- df2 %>% filter(area=="cr")
+
+library(splines)
+
+df2 %>% filter(area=="cr") %>% 
+  ggplot(aes(x=TMS_moist, y=swc))+
+  geom_point()
+
+mod1_cr <- lm(TMS_moist ~ ns(swc, df=3), data=cr_df)
+mod2_cr <- lm(TMS_moist ~ ns(swc, df=4), data=cr_df)
+mod3_cr <- lm(TMS_moist ~ ns(swc, df=5), data=cr_df)
+mod4_cr <- lm(TMS_moist ~ ns(swc, df=6), data=cr_df)
+
+
+AIC(mod1_cr, mod2_cr, mod3_cr, mod4_cr)
+
+logLik(mod1_cr)
+logLik(mod2_cr)
+logLik(mod3_cr)
+logLik(mod4_cr)
+
+#Mod 4, com df=6 é o melhor
+
+summary(mod4_cr) 
+check_model(mod4_cr)
+sjPlot::tab_model(mod4_cr)
+pred <- predict(mod4_cr, data.frame(swc=cr_df$swc), interval="confidence")
+cr_df2 <- cbind(cr_df, pred)
+ggplot(cr_df2, aes(x= swc, y=TMS_moist)) +
+  geom_point(alpha=0.6)+
+  geom_line(aes(x=swc, y=fit)) +
+  geom_ribbon(aes(x=swc, ymin=lwr, ymax=upr), alpha=0.2, fill="blue") 
+
+predict_CR <- function(new_swc) {
+  newdata <- data.frame(swc = new_swc)
+  predict(mod2_cr, newdata = newdata)
+}
+
+predict_CR(c(0.1, 0.5, 0.75))
+```
+
+
+Aplicando as funções para cada ponto 
+funcionou pior
+
+```{r}
+df2 <- df2 %>% 
+  mutate(TMS_moist_pred3 = case_when(
+    area =="vvt" & month =="jun" ~ TMS_moist,
+    area == "vvt" & point %in% c("P10","P9") ~ predict_VVTP10(swc),
+    area == "vvt" & point %in% c("P8", "P7", "P6", "P5") ~ predict_VVTP8(swc),
+    area == "vvt" & point %in% c("P4", "P3", "P2", "P1") ~ predict_VVTP4(swc),
+    area == "ing" & point %in% c("P10", "P9", "P8") ~ predict_INGP8(swc),
+    area == "ing" & point %in% c("P7", "P4", "P3") ~ predict_INGP4(swc),
+    area == "ing" & point %in% c("P6", "P5", "P1", "P2") ~ predict_INGP2(swc),
+    area == "bbt" & point %in% c("P10", "P9", "P8") ~ predict_BBTP8(swc),
+    area == "bbt" & point %in% c("P7", "P6", "P5") ~ predict_BBTP5(swc),
+    area == "bbt" & point %in% c("P4", "P3") ~ predict_BBTP3(swc),
+    area == "seteq" & point %in% c("P10", "P9") ~ predict_7QP10(swc),
+    area == "seteq" & point %in% c("P8", "P7", "P6") ~ predict_7QP7(swc),
+    area == "seteq" & point %in% c("P5", "P4", "P3", "P2", "P1") ~ predict_7QP3(swc),
+    area == "cr" ~ predict_CR(swc),
+      TRUE ~ NA
+      ))
+
+```
+
+
+Aplicando funções por area
+
+```{r}
+df2 <- df2 %>% 
+  mutate(TMS_moist_pred2 = case_when(
+    area =="vvt" & month =="jun" ~ TMS_moist,
+    area == "vvt" ~ predict_vvt(swc),
+    area == "bbt" ~ predict_bbt(swc),
+    area == "ing" ~ predict_ing(swc),
+    area == "seteq" ~ predict_7q(swc),
+    area == "" ~ predict_vvt(swc),
+    area == "cr" ~ predict_CR(swc),
+      TRUE ~ NA
+  ))
+    
+```
+##Temperatura 
+
+Predizendo temperatura atraves da temperatura do LICOR
+
+```{r}
+
+df2 %>% ggplot(aes(x=ts, y=TMS_T2, color=area)) +
+  geom_point()+
+  geom_smooth(method="lm")+
+  stat_cor()
+
+mod_ts <- lmer(TMS_T2 ~ ts + (1|point2), data=df2 %>% mutate(point2 = paste(area,point)))
+tab_model(mod_ts) #uau, r² de 0.901. 
+plot_model(mod_ts, type="re")
+check_model(mod_ts)
+```
+
+Predizendo os valores de temperatura e umidade pelos valores medidos em campo
+
+```{r}
+# aqui o point2 não é a combinação de area e ponto, mas sim a correpondencia do solo mais próximo que tenha o sensor
+
+df2 <- df2 %>% 
+  mutate(
+    point2 = paste(area,point),   # usado no modelo
+    point2_pred = case_when(
+      area == "cr" & point %in% c("P3", "P4") ~ "cr P3",
+       area == "cr" & point %in% c("P5", "P6") ~ "cr P5",
+       area == "cr" & point %in% c("P7") ~ "cr P7",
+       area == "cr" & point %in% c("P8", "P9") ~ "cr P9",
+       area == "cr" & point %in% c("P10") ~ "cr P10",
+       area == "bbt" & point %in% c("P3") ~ "bbt P3",
+      area == "bbt" & point %in% c("P5", "P4") ~ "bbt P5",
+      area == "bbt" & point %in% c("P6", "P7") ~ "bbt P7",
+      area == "bbt" & point %in% c("P8", "P9") ~ "bbt P8",
+      area == "bbt" & point %in% c("P10") ~ "bbt P10",
+      area == "ing" & point %in% c("P1", "P2") ~ "ing P2",
+      area == "ing" & point %in% c("P3", "P4") ~ "ing P4",
+      area == "ing" & point %in% c("P5", "P6") ~ "ing P6",
+      area == "ing" & point %in% c("P7", "P8") ~ "ing P8",
+      area == "ing" & point %in% c("P9", "P10") ~ "ing P10",
+      area == "vvt" & point %in% c("P1", "P2") ~ "vvt P1",
+      area == "vvt" & point %in% c("P3", "P4", "P5") ~ "vvt P4",
+      area == "vvt" & point %in% c("P6", "P7") ~ "vvt P7",
+      area == "vvt" & point %in% c("P8", "P9") ~ "vvt P8",
+      area == "vvt" & point %in% c("P10") ~ "vvt P10",
+      area == "seteq" & point %in% c("P1", "P2") ~ "seteq P1",
+      area == "seteq" & point %in% c("P3", "P4") ~ "seteq P3",
+      area == "seteq" & point %in% c("P5", "P6") ~ "seteq P5",
+      area == "seteq" & point %in% c("P7", "P8") ~ "seteq P7",
+      area == "seteq" & point %in% c("P9", "P10") ~ "seteq P10",
+      TRUE ~ paste(area, point)   # mantém original
+    )
+  )
+
+#Predizendo:
+
+df2 <- df2  %>%
+  mutate(
+    TMS_T2_pred = predict(mod_ts, 
+                               newdata = data.frame(
+                                 ts = ts,
+                                 point2 = point2_pred),
+                               re.form = NULL)) %>%
+  mutate(
+    TMS_T2_pred = if_else(area == "vvt" & month == "jun",
+                              TMS_T2,
+                              TMS_T2_pred)
+  )
+
+
+
+df2 <- df2 %>%
+  mutate(
+    TMS_moist_pred = predict(mod_mt,
+                              newdata = data.frame(
+                                swc = swc,
+                                point2 = point2_pred
+                              ),
+                            re.form = NULL)) 
+
+df2 <- df2 %>%
+  mutate(
+    VWC_moisture_pred = predict(mod_vwc,
+                              newdata = data.frame(
+                                swc = swc,
+                                point2 = point2_pred
+                              ),
+                            re.form = NULL)) 
+
+df2 <- df2 %>%
+    mutate(
+    TMS_moist_pred2 = if_else(area == "vvt" & month == "jun",
+                              TMS_moist,
+                              TMS_moist_pred2) 
+  )
+
+  
+```
+
+Vendo as correlações:
+
+```{r}
+
+df2 %>% ggplot(aes(x=swc, y=TMS_moist)) +
+  geom_point()+
+  geom_smooth(method="lm")+
+  stat_cor()
+
+df2 %>% ggplot(aes(x=swc, y=TMS_moist_pred, color=point2)) +
+  geom_point()+
+  geom_smooth(method="lm")+
+  stat_cor() #Claro, TMS_moist_pred foi predito através de swc
+
+df2 %>% ggplot(aes(x=swc, y=TMS_moist_pred2, color=point2)) +
+  geom_point()+
+  geom_smooth(method="lm")+
+  stat_cor()
+
+df2 %>% ggplot(aes(x=swc, y=TMS_moist_pred3, color=point2)) +
+  geom_point()+
+   geom_smooth(method="lm")+
+  stat_cor()
+```
+
+Aparentemente, o melhor dado sem agrupar é o obtido pelos próprios dados medidos em campo (pred). Agrupando por area, o do experimento, mas por área (pred2), passa a representar melhor, mas bem proximo do primeiro. O por ponto (pred3) perde sempre
+
+## Valores médios 
+```{r}
+print("Média Total")
+df %>% summarise(co2 = mean(fco2), ch4 = mean(fch4))
+
+print("Média Total swc=0")
+df %>% filter(swc==0) %>% summarise(co2 = mean(fco2), ch4 = mean(fch4))
+
+print("Média Total swc>0.9")
+df %>% filter(swc>0.9) %>% summarise(co2 = mean(fco2), ch4 = mean(fch4))
+
+print("Temperatura Media")
+df %>% summarise(mean(ts), sd(ts))
+
+print("Temp swc=0")
+df %>% filter(swc==0) %>% summarise(mean(ts))
+
+print("Temp swc>0.9")
+df %>% filter(swc>0.9) %>% summarise(mean(ts))
+
+
+print("Média Mensal")
+df %>% group_by(month) %>% summarise(co2 = mean(fco2), ch4 = mean(fch4))
+
+print("Média Mensal por Posição")
+df %>% filter(point == "P10") %>% group_by(month) %>% summarise(co2 = mean(fco2), ch4 = mean(fch4))
+
+df %>% filter(point == "P1") %>% group_by(month) %>% summarise(co2 = mean(fco2), ch4 = mean(fch4))
+```
+## Descrição das áreas
+
+Umidade
+```{r}
+
+##ing
+tms_data %>% filter(area=="ing") %>%
+  mutate(dia = lubridate::floor_date(datetime, unit="day")) %>%
+    group_by(point, dia) %>%
+  summarise(VWC_moisture=mean(VWC_moisture)) %>%
+mutate(point=factor(point, levels=c("P1", "P2", "P3", "P4", "P5", "P6","P7", "P8", "P9", "P10"))) %>%
+  ggplot(aes(x=dia, y=VWC_moisture)) +
+  geom_line(color="darkblue")+
+  facet_wrap(~point, ncol=1) +
+  xlab("")+
+  ylab("Soil Moisture Signal")+
+  theme_clean()+
+  theme(axis.title = element_text(size=14),
+        axis.text = element_text(size=12))
+
+setwd("G:/Meu Drive/1. Meu Computador/Pesquisa/Cary Felowship/Plots")
+
+ggsave("moist_ing.png", unit="cm", width = 10, height = 15)  
+
+
+##vvt
+tms_data %>% filter(area=="vvt") %>%
+  mutate(dia = lubridate::floor_date(datetime, unit="day")) %>%
+    group_by(point, dia) %>%
+  summarise(TMS_moist=mean(TMS_moist)) %>%
+mutate(point=factor(point, levels=c("P1", "P2", "P3", "P4", "P5", "P6","P7", "P8", "P9", "P10"))) %>%
+  ggplot(aes(x=dia, y=TMS_moist)) +
+  geom_line(color="darkblue")+
+  facet_wrap(~point, ncol=1) +
+  xlab("")+
+  ylab("Soil Moisture Signal")+
+  theme_clean()+
+  theme(axis.title = element_text(size=14),
+        axis.text = element_text(size=12))
+
+setwd("G:/Meu Drive/1. Meu Computador/Pesquisa/Cary Felowship/Plots")
+
+ggsave("moist_vvt.png", unit="cm", width = 10, height = 15)  
+
+##cr
+tms_data %>% filter(area=="cr") %>%
+  mutate(dia = lubridate::floor_date(datetime, unit="day")) %>%
+    group_by(point, dia) %>%
+  summarise(TMS_moist=mean(TMS_moist)) %>%
+mutate(point=factor(point, levels=c("P1", "P2", "P3", "P4", "P5", "P6","P7", "P8", "P9", "P10"))) %>%
+  ggplot(aes(x=dia, y=TMS_moist)) +
+  geom_line(color="darkblue")+
+  facet_wrap(~point, ncol=1) +
+  xlab("")+
+  ylab("Soil Moisture Signal")+
+  theme_clean()+
+  theme(axis.title = element_text(size=14),
+        axis.text = element_text(size=12))
+##7Q
+tms_data %>% filter(area=="seteq") %>%
+  mutate(dia = lubridate::floor_date(datetime, unit="day")) %>%
+    group_by(point, dia) %>%
+  summarise(TMS_moist=mean(TMS_moist)) %>%
+mutate(point=factor(point, levels=c("P1", "P2", "P3", "P4", "P5", "P6","P7", "P8", "P9", "P10"))) %>%
+  ggplot(aes(x=dia, y=TMS_moist)) +
+  geom_line(color="darkblue")+
+  facet_wrap(~point, ncol=1) +
+  xlab("")+
+  ylab("Soil Moisture Signal")+
+  theme_clean()+
+  theme(axis.title = element_text(size=14),
+        axis.text = element_text(size=12))
+
+
+setwd("G:/Meu Drive/1. Meu Computador/Pesquisa/Cary Felowship/Plots")
+
+ggsave("moist_7Q.png", unit="cm", width = 10, height = 15) 
+
+##BBT
+tms_data %>% filter(area=="bbt") %>%
+  mutate(dia = lubridate::floor_date(datetime, unit="day")) %>%
+    group_by(point, dia) %>%
+  summarise(TMS_moist=mean(TMS_moist)) %>%
+mutate(point=factor(point, levels=c("P1", "P2", "P3", "P4", "P5", "P6","P7", "P8", "P9", "P10"))) %>%
+  ggplot(aes(x=dia, y=TMS_moist)) +
+  geom_line(color="darkblue")+
+  facet_wrap(~point, ncol=1) +
+  xlab("")+
+  ylab("Soil Moisture Signal")+
+  theme_clean()+
+  theme(axis.title = element_text(size=14),
+        axis.text = element_text(size=12))
+
+
+setwd("G:/Meu Drive/1. Meu Computador/Pesquisa/Cary Felowship/Plots")
+
+ggsave("moist_bbt.png", unit="cm", width = 10, height = 15) 
+
+```
+
+#Solos
+
+```{r}
+t <- solos %>% select(area, point, sand, silt, clay) %>%
+  mutate(area=case_when(area=='ing'~"Ingleses",
+                        area=="cr" ~ "Couros",
+                        area=="vvt"~ "Vale Verde",
+                        area=="seteq"~"Sete Quedas",
+                        area=="bbt"~ "Mulungu",
+                        TRUE ~ as.factor(area))) %>%
+  mutate(area=factor(area, levels = c("Ingleses", "Couros", "Vale Verde", "Sete Quedas", "Mulungu")),
+              point=factor(point, levels=c("P1", "P2", "P3", "P4", "P5", "P6", "P7", "P8", "P9", "P10"))) %>%
+  
+mutate(total = sand+silt+clay) %>% 
+  mutate(sand = (sand)/total,
+              silt = (silt)/(total),
+              clay = (clay)/(total)) %>% 
+  pivot_longer(c("sand", "silt", "clay"), 
+                 names_to = "texture", values_to = "txt_pct") %>% 
+  ggplot(aes(x=point, y=txt_pct, fill=texture)) +
+  geom_col()+
+  facet_wrap(~area, ncol=1) +
+  xlab("")+  
+  ylab("")+
+  labs(fill="")+
+  theme_clean()+
+  theme(axis.title = element_text(size=14),
+        axis.text = element_text(size=12),
+        strip.text = element_text(size = 14),
+        legend.background = element_blank(),
+         plot.background = element_blank())
+
+  setwd("G:/Meu Drive/1. Meu Computador/Pesquisa/Cary Felowship/Plots")
+
+ggsave("texture.png", unit="cm", width = 12, height = 17) 
+
+```
+
+
+```{r}
+c <- solos %>% select(area, point, C,N) %>%
+  mutate(area=case_when(area=='ing'~"Ingleses",
+                        area=="cr" ~ "Couros",
+                        area=="vvt"~ "Vale Verde",
+                        area=="seteq"~"Sete Quedas",
+                        area=="bbt"~ "Mulungu",
+                        TRUE ~ as.factor(area))) %>%
+  mutate(area=factor(area, levels = c("Ingleses", "Couros", "Vale Verde", "Sete Quedas", "Mulungu")),
+              point=factor(point, levels=c("P1", "P2", "P3", "P4", "P5", "P6", "P7", "P8", "P9", "P10"))) %>%
+  ggplot(aes(x=point, y=C)) +
+  geom_col(fill="#F8766D")+
+  facet_wrap(~area, ncol=1) +
+  xlab("")+  
+  ylab(" C (%)")+
+  theme_clean()+
+  theme(axis.title = element_text(size=14),
+        axis.text = element_text(size=12),
+        strip.text = element_text(size = 14),
+        legend.background = element_blank(),
+        plot.background = element_blank())
+
+
+n <- solos %>% select(area, point, C,N) %>%
+  mutate(area=case_when(area=='ing'~"Ingleses",
+                        area=="cr" ~ "Couros",
+                        area=="vvt"~ "Vale Verde",
+                        area=="seteq"~"Sete Quedas",
+                        area=="bbt"~ "Mulungu",
+                        TRUE ~ as.factor(area))) %>%
+  mutate(area=factor(area, levels = c("Ingleses", "Couros", "Vale Verde", "Sete Quedas", "Mulungu")),
+              point=factor(point, levels=c("P1", "P2", "P3", "P4", "P5", "P6", "P7", "P8", "P9", "P10"))) %>%
+  ggplot(aes(x=point, y=N)) +
+geom_col(fill="#00BFC4")+
+  facet_wrap(~area, ncol=1) +
+  xlab("")+  
+  ylab(" N (%)")+
+  theme_clean()+
+  theme(axis.title = element_text(size=14),
+        axis.text = element_text(size=12),
+        strip.text = element_text(size = 14),
+        legend.background = element_blank(),
+        plot.background = element_blank())
+  
+library(patchwork)
+c+n+t
+
+setwd("G:/Meu Drive/1. Meu Computador/Pesquisa/Cary Felowship/Plots")
+
+ggsave("CNT.png", unit="cm", width = 30, height = 17) 
+```
+
+## Variáveis TOMST
+
+Variabilidade de umidade e temperatura
+```{r}
+tms_data_hour <- tms_data %>%
+  mutate(datetime_hour = lubridate::floor_date(datetime, unit = "hour")) %>%
+  group_by(area, point, datetime_hour) %>%
+  summarise(
+    TMS_moist_hr = mean(TMS_moist, na.rm = TRUE),
+    TMS_T2_hr = mean(TMS_T2, na.rm = TRUE)
+  )
+
+tms_data_hour <- tms_data_hour %>%
+  group_by(area, point) %>%
+  arrange(datetime_hour) %>%       # garantir ordem cronológica
+  mutate(
+    sd_moist_month = runner(
+      x = TMS_moist_hr,
+      idx = datetime_hour,
+      k = as.difftime(30, units = "days"),
+      f = function(x) sd(x, na.rm = TRUE)
+    ),
+    sd_ts_month = runner(
+      x = TMS_T2_hr,
+      idx = datetime_hour,
+      k = as.difftime(30, units = "days"),
+      f = function(x) sd(x, na.rm = TRUE)
+      ),
+    sd_moist_2month = runner(
+      x = TMS_moist_hr,
+      idx = datetime_hour,
+      k = as.difftime(60, units = "days"),
+      f = function(x) sd(x, na.rm = TRUE)
+    ),
+    sd_ts_2month = runner(
+      x = TMS_T2_hr,
+      idx = datetime_hour,
+      k = as.difftime(60, units = "days"),
+      f = function(x) sd(x, na.rm = TRUE),
+    ),
+    sd_moist_3month = runner(
+      x = TMS_moist_hr,
+      idx = datetime_hour,
+      k = as.difftime(90, units = "days"),
+      f = function(x) sd(x, na.rm = TRUE)
+    ),
+    sd_ts_3month = runner(
+      x = TMS_T2_hr,
+      idx = datetime_hour,
+      k = as.difftime(90, units = "days"),
+      f = function(x) sd(x, na.rm = TRUE),
+    )
+  )
+
+tms_data_hour %>% 
+  filter(area=="vvt") %>%
+  ggplot(aes(x=datetime_hour, y=sd_ts_month)) +
+  geom_point()+
+  geom_smooth()+
+  facet_wrap(~point)
+          
+```
+
+Variabilidade por ponto
+```{r}
+tms_data_hour <- tms_data_hour %>%
+  group_by(area, point) %>%
+  mutate(sd_moist_area = sd(TMS_moist_hr))
+```
+
+
+Efeitos acumulados da preciptação e lags
+
+```{r}
+n_per_week <- 24 * 7
+
+# construir lista de funções: lag por w semanas = lag n = w * n_per_week
+fns_weeks <- setNames(
+  lapply(1:12, function(w) {
+    function(x) dplyr::lag(x, n = w * n_per_week)
+  }),
+  nm = paste0("lag", 1:12)
+)
+
+tms_data_hour <- tms_data_hour %>%
+  group_by(area, point) %>%
+  arrange(datetime_hour) %>%
+  mutate(
+    moist_week = runner(
+      x   = TMS_moist_hr,          # substitui pelo nome real da coluna de precip
+      idx = datetime_hour,
+      k   = as.difftime(7, units = "days"),
+      f   = function(x) mean(x, na.rm = TRUE)
+    ),
+    # aplicar os 12 lags (cada lag = semanas atrás)
+    across(.cols = moist_week,
+           .fns  = fns_weeks,
+           .names = "{.col}_wk{.fn}")   # resulta em precip_week_wklag1 ... precip_week_wklag12
+  ) %>%
+  ungroup()
+```
+
+Duração da saturação
+
+```{r}
+
+```
+
+
+Função para padronização de variaveis pelo max e min
+
+```{r}
+pdr <- function(variable){
+  
+  min = min(variable, na.rm=T)
+  max = max(variable, na.rm=T)
+  
+  variable_pdr <- (variable-min)/(max-min)
+ 
+  return(variable_pdr)
+}
+```
+
+Adicionando na planilha de fluxos:
+
+
+```{r}
+# 1) Transforme seus data.frames em data.tables
+df2_dt <- setDT(df2)
+tms_hour_dt <- setDT(tms_data_hour %>% rename(datetime = datetime_hour) %>% mutate(point2_pred = paste(area, point)))
+
+
+# 2) Defina chave (key) em tms_data para fast joins
+tms_hour_dt <- setkey(tms_hour_dt, point2_pred, datetime)
+
+# 3) Faça o rolling join: para cada linha de df, traga TMS_moist_mean
+#    onde tms_data$datetime seja o último valor ≤ df$datetime
+df3 <- df2_dt[, c("sd_moist_month", "sd_moist_2month", "sd_moist_3month", "sd_ts_month", "sd_ts_2month", "sd_ts_3month", "moist_week", "moist_week_wklag1", "moist_week_wklag2", "moist_week_wklag3", "moist_week_wklag4", "moist_week_wklag5", "moist_week_wklag6", "moist_week_wklag7", "moist_week_wklag8", "moist_week_wklag9", "moist_week_wklag10", "moist_week_wklag11", "moist_week_wklag12", "sd_moist_area") := 
+     tms_hour_dt[.SD,                           # pega tms_data "sobre" cada linha de df
+               .(sd_moist_month,            
+                 sd_moist_2month,
+                 sd_moist_3month,
+                 sd_ts_month,
+                 sd_ts_2month,
+                 sd_ts_3month,
+                 moist_week,
+                 moist_week_wklag1,
+                 moist_week_wklag2,
+                 moist_week_wklag3,
+                 moist_week_wklag4,
+                 moist_week_wklag5,
+                 moist_week_wklag6,
+                 moist_week_wklag7,
+                 moist_week_wklag8,
+                 moist_week_wklag9,
+                 moist_week_wklag10,
+                 moist_week_wklag11,
+                 moist_week_wklag12,
+                 sd_moist_area),
+               on = .(point2_pred, datetime), # faz o join por area, point e datetime
+               roll = TRUE                    # o rolling join (último datetime ≤ o de df)
+     ]
+]
+
+
+df3 <- df3 %>% mutate(moist_week_p= pdr(moist_week),
+                      moist_week_wklag1_p = pdr( moist_week_wklag1),
+                      moist_week_wklag2_p = pdr( moist_week_wklag2),
+                      moist_week_wklag3_p = pdr( moist_week_wklag3),
+                      moist_week_wklag4_p = pdr( moist_week_wklag4),
+                      moist_week_wklag5_p = pdr( moist_week_wklag5),
+                      moist_week_wklag6_p = pdr( moist_week_wklag6),
+                      moist_week_wklag7_p = pdr( moist_week_wklag7),
+                      moist_week_wklag8_p = pdr( moist_week_wklag8),
+                      moist_week_wklag9_p = pdr( moist_week_wklag9),
+                      moist_week_wklag10_p = pdr( moist_week_wklag10),
+                      moist_week_wklag11_p = pdr( moist_week_wklag11),
+                      moist_week_wklag12_p = pdr( moist_week_wklag12),
+                      sd_moist_area_p=pdr(sd_moist_area))
+```
+
+Vendo
+
+```{r}
+df2 %>% filter(sd_moist_3month<750) %>%
+  ggplot(aes(x=sd_moist_3month, y=fco2)) +
+  geom_point() +
+  geom_smooth() +
+  stat_cor()
+```
+Parece que tem correlação sim, mas qual é a explicação
+
+
+## Preciptação média 
+
+Proxy numérico para mês e que poderemos usar no modelo para predição.
+
+```{r}
+setwd("G:/Meu Drive/1. Meu Computador/Pesquisa/Cary Felowship/Dados/Preciptação")
+
+prep <- read.csv("prep_2010-2024.csv") %>% select(mes, prec) %>% mutate(month=as.factor(mes)) %>% select(-mes)
+
+tms_data <- tms_data %>% mutate(month = month(datetime)) %>% mutate(month=as.factor(month))
+df2 <- df2 %>% mutate(month2 = case_when(month == "set24" ~ "9",
+                                         month == "set25" ~ "9",
+                                        month == "nov24" ~ "11",
+                                        month == "fev25" ~ "2",
+                                        month == "jun25" ~ "6",
+                                        month == "dez25" ~ "12",
+                                        TRUE ~ as.factor(month)))
+prep <- prep %>% rename(month2=month)
+tms_data <- tms_data %>% rename(month2=month)
+df2 <- left_join(df2, prep, by="month2")
+tms_data <- left_join(tms_data, prep, by="month2")
+```
+
+
+## Testes
+
+Modelo CO2
+
+Padronizando valores com range mt diferentes
+```{r}
+
+df2 <- df2 %>%
+  mutate(TMS_moist_p = pdr(TMS_moist),
+         TMS_moist_pred_p = pdr(TMS_moist_pred))
+         #TMS_moist_pred2_p = pdr(TMS_moist_pred2),
+         #TMS_moist_pred3_p = pdr(TMS_moist_pred3))
+         
+```
+
+Teste CO2
+
+```{r}
+df2 <- df2 %>% mutate(point2 = as.factor(point2),
+                      soil2 = as.factor(soil2))
+
+co_1 <- lmer(log(fco2) ~ TMS_moist_pred_p+ TMS_moist_pred_p*C  + clay + TMS_moist_pred_p*ts + (TMS_moist_pred_p|point2) , data=df2)
+
+tab_model(co_1) 
+check_model(co_1)
+
+plot_model(co_1, type="pred", terms="TMS_moist_pred_p", show.data = T)
+plot_model(co_1, type="int", show.data = T)
+plot_model(co_1, type="re", show.data = T)
+plot_model(co_1, type="std2", show.data = T)
+plot_model(co_1, type="slope", show.data = T)
+plot_model(co_1, type="est", show.data = T, show.values = T, show.p = T)
+plot_model(co_1, type="emm", show.data = T, show.values = T, show.p = T, terms=c("TMS_T2_pred","TMS_moist_pred_p","C","hand","soil"))
+
+#Fazer partição de variancia
+```
+
+```{r}
+co_2 <- lmer(log(fco2) ~ TMS_T2_pred*TMS_moist_pred_p+C+hand+sand+ (1|area), data=df2)
+tab_model(co_2) 
+check_model(co_2)
+
+#esse modelo nao ajusta com umidade no fator aleatorio
+
+logLik(co_2)
+logLik(co_1) #ta melhor
+```
+
+```{r}
+co_3 <- lmer(log(fco2) ~ TMS_T2_pred*TMS_moist_pred3_p+C+hand+soil2+ (1|area), data=df2)
+tab_model(co_3) 
+check_model(co_2)
+
+logLik(co_2)
+logLik(co_1) #ta melhor
+```
+
+```{r}
+co_4 <- lmer(log(fco2) ~ swc+ts+hand+C*swc+clay+(swc|point2), data=df2)
+tab_model(co_4)
+summary(co_4)
+check_model(co_4)
+plot_model(co_2, type="pred", terms="swc", show.data = T)
+plot_model(co_3, type="re", show.data = T)
+plot_model(co_2, type="std2", show.data = T)
+```
+
+#Acho que nenhuma das variaveis que estou tentando obter pelo TOMST estão confiáveis.
+```{r}
+  co_5 <- lmer(fco2 ~ sd_moist_area + swc + ts + (1|point2), data=df3)
+tab_model(co_5)
+summary(co_4)
+check_model(co_5)
+plot_model(co_5, type="pred", terms="moist_week_wklag5_p", show.data = T)
+plot_model(co_5, type = "int" , show.data = T)
+plot_model(co_2, type="std2", show.data = T)
+```
+
+Modelo CH4
+```{r}
+ch4_1 <- lmer(log(fch4+5) ~ TMS_moist_pred_p +(1|point2), data=df2 %>% mutate(point2 = paste(area, point)))
+tab_model(ch4_1) 
+check_model(ch4_1)
+plot_model(ch4_1, type="pred", terms="swc", show.data = T)
+```
+
+```{r}
+ch4_2 <- lmer(log(fch4+5) ~ TMS_T2_pred+TMS_moist_pred_p+ C + hand+soil+(1|point2), data=df2 %>% mutate(point2 = paste(area, point)))
+tab_model(ch4_2) 
+check_model(ch4_2)
+plot_model(ch4_2, type="pred", terms="swc", show.data = T)
+```
+
+```{r}
+ch4_3 <- lmer(log(fch4+5) ~ TMS_T2_pred+TMS_moist_pred3_p+ C + hand+soil+(TMS_moist_pred3_p|point2), data=df2 %>% mutate(point2 = paste(area, point)))
+tab_model(ch4_3) 
+check_model(ch4_3)
+plot_model(ch4_3, type="pred", terms="swc", show.data = T)
+```
+
+```{r}
+ch4_4 <- lmer(log(fch4+5) ~ swc+ts+ C + hand+clay+(swc|point2), data=df %>% mutate(point2 = paste(area, point)))
+tab_model(ch4_4) 
+check_model(ch4_4)
+plot_model(ch4_4, type="pred", terms="swc", show.data = T)
+plot_model(ch4_4, type="re", terms="swc", show.data = T)
+```
+
+```{r}
+ch4_5 <- lmer(log(fch4+5) ~ ts+ C + hand+soil+moist_week_wklag12+(1|point2), data=df3)
+tab_model(ch4_5) 
+check_model(ch4_4)
+plot_model(ch4_4, type="pred", terms="swc", show.data = T)
+plot_model(ch4_4, type="re", terms="swc", show.data = T)
+```
+
+## Predizendo com RF
+
+Separando treino e teste
+```{r}
+  set.seed(123)
+n <- nrow(df2)
+train_index <- sample(seq_len(n), size = 0.7 * n)
+
+train <- df3[train_index, ] 
+
+  train <- train %>% select(fco2, fch4, sand, clay, silt, sd_moist_area, sd_moist_month, sd_ts_month, sd_moist_3month, sd_ts_3month, moist_week_wklag2, moist_week, N, C, hand, hand_p, TMS_moist_pred, TMS_T2_pred, area, point, point2, prec, month) %>% na.omit()
+
+  test  <- df3[-train_index, ]
+test <- test %>% select(fco2, fch4, sand, clay, silt, sd_moist_area, sd_moist_month, sd_ts_month, sd_moist_3month, sd_ts_3month, moist_week_wklag2, moist_week, N, C, hand, hand_p, TMS_moist_pred, TMS_T2_pred, area, point, point2, prec, month) %>% na.omit()
+```
+
+
+Preparando função para fazer grid search para n parametros e n tree
+
+```{r}
+
+customRF <- list(
+  type = "Regression",
+  library = "randomForest",
+  loop = NULL,
+  parameters = data.frame(parameter = c("mtry", "ntree"),
+                          class = rep("numeric", 2),
+                          label = c("mtry", "ntree")),
+  grid = function(x, y, len = NULL, search = "grid") {},
+  fit = function(x, y, wts, param, lev, last, classProbs, ...) {
+    randomForest(x, y,
+                 mtry = param$mtry,
+                 ntree = param$ntree,
+                 ...)
+  },
+  predict = function(modelFit, newdata, submodels = NULL) {
+    predict(modelFit, newdata)
+  },
+  prob = NULL,
+  sort = function(x) x[order(x[,1]),],
+  levels = function(x) x$classes
+)
+
+```
+
+Validação cruzada 5fold
+```{r}
+ctrl <- trainControl(
+  method = "cv",     # cross-validation
+  number = 5,        # 5 folds
+  verboseIter = TRUE # mostra o progresso
+)
+```
+
+Hiperparamentros para Grid Search
+```{r}
+grid <- expand.grid(
+  mtry = 2:22,
+  ntree = c(400, 500, 700, 1000, 1250)
+)
+```
+
+
+Treinando o modelo
+```{r}
+set.seed(123)
+rf_caret <- train(
+  fco2 ~ sand + clay + silt + sd_moist_area + sd_moist_month + sd_ts_month + sd_moist_3month + sd_ts_3month + moist_week_wklag2 + moist_week + N + C + hand + hand_p + TMS_moist_pred + TMS_T2_pred + area + point,
+  data = train,
+  method = customRF,
+  trControl = ctrl,
+  tuneGrid = grid,
+  importance = TRUE
+)
+
+
+print(rf_caret)
+plot(rf_caret)  # curva de desempenho para cada mtry
+rf_caret$bestTune  # mostra o melhor mtry
+```
+
+Testando
+```{r}
+test$pred_rf <- predict(rf_caret, newdata = test)
+
+R2_test   <- cor(test$fco2, test$pred_rf)^2
+
+RMSE_test <- sqrt(mean((test$fco2 - test$pred_rf)^2))
+
+cat("R² teste =", R2_test, "\n")
+cat("RMSE teste =", RMSE_test, "\n")
+```
+
+Importancia das variáveis
+```{r}
+rf_final <- rf_caret$finalModel
+importance_rf <- importance(rf_final)
+varImpPlot(rf_final, main = "Importância das variáveis - Random Forest")
+```
+
+## Predizendo com XGBoost
+```{r}
+df3 <- df2 %>% select(fco2, clay, N, C, hand, hand_p,
+                        TMS_moist_pred, TMS_moist_pred_p,
+                        TMS_moist_pred2, TMS_moist_pred2_p,
+                        TMS_T2_pred, area, point, point2) %>% na.omit()
+
+
+# 1) Separe treino e teste (70/30)
+set.seed(123)
+n           <- nrow(df3)
+train_index <- sample(seq_len(n), size = 0.7 * n)
+train       <- df3[train_index, ] %>% 
+                 select(fco2, clay, N, C, hand, hand_p,
+                        TMS_moist_pred, TMS_moist_pred_p,
+                        TMS_moist_pred2, TMS_moist_pred2_p,
+                        TMS_T2_pred, area) %>% 
+                 na.omit()
+test        <- df3[-train_index, ] %>% 
+                 select(fco2, soil, N, C, hand, hand_p,
+                        TMS_moist_pred, TMS_moist_pred_p,
+                        TMS_moist_pred2, TMS_moist_pred2_p,
+                        TMS_T2_pred, area) %>% 
+                 na.omit()
+
+# 2) Crie sparse.model.matrix para treino e registre os nomes de features
+train_mat      <- sparse.model.matrix(fco2 ~ . - 1, data = train)
+feature_names  <- colnames(train_mat)
+dtrain         <- xgb.DMatrix(data = train_mat, label = train$fco2)
+
+# 3) Para o teste, crie a matriz e alinhe as colunas a feature_names
+raw_test_mat <- sparse.model.matrix(fco2 ~ . - 1, data = test)
+
+# -- Cria colunas faltantes com zeros
+missing_cols <- setdiff(feature_names, colnames(raw_test_mat))
+if (length(missing_cols) > 0) {
+  zero_mat <- Matrix(0, nrow = nrow(raw_test_mat), ncol = length(missing_cols),
+                     dimnames = list(NULL, missing_cols))
+  raw_test_mat <- cbind(raw_test_mat, zero_mat)
+}
+
+# -- Remove colunas extras (caso existam) e reordena
+extra_cols <- setdiff(colnames(raw_test_mat), feature_names)
+if (length(extra_cols) > 0) {
+  raw_test_mat <- raw_test_mat[, setdiff(colnames(raw_test_mat), extra_cols)]
+}
+test_mat <- raw_test_mat[, feature_names]
+
+dtest <- xgb.DMatrix(data = test_mat, label = test$fco2)
+
+# 4) Parâmetros-base para CV inicial (encontrar nrounds)
+base_params <- list(
+  objective        = "reg:squarederror",
+  eval_metric      = "rmse",
+  eta              = 0.1,
+  max_depth        = 6,
+  subsample        = 0.8,
+  colsample_bytree = 0.8,
+  min_child_weight = 1,
+  gamma            = 0
+)
+
+# 5) CV para definir nrounds com early stopping
+set.seed(123)
+cv.res <- xgb.cv(
+  params                = base_params,
+  data                  = dtrain,
+  nrounds               = 1000,
+  nfold                 = 5,
+  early_stopping_rounds = 10,
+  verbose               = 1
+)
+best_nrounds <- cv.res$best_iteration
+cat("Melhor nrounds por CV:", best_nrounds, "\n")
+
+# 6) Monte o grid completo para caret
+xgb_grid2 <- expand.grid(
+  nrounds           = c(100, 200, 300),
+  eta               = c(0.01, 0.03, 0.05),    # mais lento → menos overfit
+  max_depth         = c(3, 4, 5),             # árvores menos profundas
+  gamma             = c(1, 3, 5),             # penaliza divisão de nó
+  colsample_bytree  = c(0.5, 0.7, 0.9),        # menos features por árvore
+  min_child_weight  = c(3, 5, 7),             # exige mais exemplos p/ divisão
+  subsample         = c(0.5, 0.7, 0.9)         # amostragem de linhas
+)
+
+ctrl2 <- trainControl(
+  method          = "cv",
+  number          = 5,
+  verboseIter     = TRUE,
+  returnData      = FALSE,
+  allowParallel   = TRUE
+)
+
+# 7) Busca de hiperparâmetros com caret
+set.seed(123)
+xgb_tuned <- train(
+  fco2      ~ .,
+  data      = train,
+  method    = "xgbTree",
+  trControl = ctrl2,
+  tuneGrid  = xgb_grid2,
+  metric    = "RMSE"
+)
+
+
+print(xgb_tuned)
+best2 <- xgb_tuned$bestTune
+cat("Melhores parâmetros após reforço de regulagem:\n")
+print(best2)
+
+# 8) Treino final usando os melhores valores
+final_params2 <- list(
+  objective        = "reg:squarederror",
+  eval_metric      = "rmse",
+  eta              = best2$eta,
+  max_depth        = best2$max_depth,
+  subsample        = best2$subsample,
+  colsample_bytree = best2$colsample_bytree,
+  min_child_weight = best2$min_child_weight,
+  gamma            = best2$gamma
+)
+
+set.seed(123)
+xgb_final2 <- xgb.train(
+  params                = final_params2,
+  data                  = dtrain,
+  nrounds               = best2$nrounds,
+  watchlist             = list(train = dtrain),
+  early_stopping_rounds = 10,
+  verbose               = 1
+)
+
+# 9) Avaliação no conjunto de teste
+preds2     <- predict(xgb_final2, newdata = dtest)
+R2_test2   <- cor(test$fco2, preds2)^2
+RMSE_test2 <- sqrt(mean((test$fco2 - preds2)^2))
+cat(sprintf("R² teste (ajustado):  %.3f\n", R2_test2))
+cat(sprintf("RMSE teste (ajustado): %.3f\n", RMSE_test2))
+
+# 10) Importância de variáveis e plot das top 10
+imp <- xgb.importance(feature_names = feature_names, model = xgb_final)
+print(head(imp, 10))
+xgb.plot.importance(imp, top_n = 10, measure = "Gain")
+```
+
+## Predizendo os valores pelo LMM
+```{r}
+# Criando dados para previsão
+tms_full <- left_join(tms_data_hour, df2 %>% filter(month2 ==6) %>% select(area, point, point2, C, clay, ts), 
+                      by = c("area", "point")) %>%
+  mutate(
+    # padronizar TMS_moist pelo range dos dados de treino
+    TMS_moist_p = (TMS_moist_hr - min(df2$TMS_moist_pred, na.rm = TRUE)) /
+                        (max(df2$TMS_moist_pred, na.rm = TRUE) - min(df2$TMS_moist_pred, na.rm = TRUE)))
+
+
+tms_full$point2 <- factor(tms_full$point2, levels = levels(df2$point2))
+
+
+
+tms_full <- tms_full %>% rename(TMS_T2_pred = TMS_T2_hr, TMS_moist_pred_p = TMS_moist_p) %>%
+  mutate(point =factor(point, levels = c("P1", "P2", "P3", "P4", "P5", "P6", "P7", "P8", "P9", "P10")))
+
+# Predição (incluindo efeitos aleatórios por point2) o problema ta nos sensores repetidos do tomst
+tms_full$predict_CO2 <- exp(predict(co_1, newdata = tms_full, re.form = NULL, allow.new.levels =T))
+
+tms_full$predict_CH4 <- (exp(predict(ch4_1, newdata = tms_full, re.form = NULL, allow.new.levels =T)))-5
+```
+
+### Vizualizando as predições
+
+
+Obtendo os dados medidos de fluxo de co2 e ch4
+```{r}
+# Preparar os dados
+df2_clean <- df2 %>%
+  filter(month != "set") %>%
+  select(area, point, fco2, fch4, datetime)
+
+tms_full <- tms_full %>% mutate(datetime2=datetime_hour)
+
+tms_dt <- as.data.table(tms_full)
+df2_dt <- as.data.table(df2_clean)
+
+tms_dt[, datetime := as.POSIXct(datetime_hour)]
+df2_dt[, datetime := as.POSIXct(datetime)]
+
+setkey(tms_dt, area, point, datetime)
+setkey(df2_dt, area, point, datetime)
+
+# 1) Para cada valor de df2, achar a primeira linha do tms_dt com datetime >= datetime de df2
+join_res <- tms_dt[df2_dt, roll = -Inf]
+
+# join_res tem as colunas de tms_dt + colunas df2 prefixadas com i.
+# datetime em join_res é do df2 (pois df2 é i)
+
+# 2) Vamos criar um data.table só com as linhas de tms_dt que correspondem a essas datas,
+# ou seja, pegando o datetime de tms_dt que foi usado no join (coluna 'datetime' sem prefixo)
+assign_dt <- join_res[, .(area, point, datetime = datetime, datetime2=datetime2, fco2 = fco2, fch4 = fch4)]
+
+# 3) Agora atualizar tms_dt com esses valores, usando a chave (area, point, datetime)
+# A correspondência usa o datetime de tms_dt (coluna 'datetime' sem prefixo)
+
+tms_dt[, fco2_med := NA_real_]
+tms_dt[, fch4_med := NA_real_]
+
+tms_dt[assign_dt, on = .(area, point, datetime2), `:=` (
+  fco2 = fco2,
+  fch4 = fch4
+)]
+
+# Resultado: tms_dt com fco2_med e fch4_med preenchidos **apenas na linha única** de datetime correspondente a cada medição
+
+# Se quiser voltar para data.frame:
+tms_full2 <- as.data.frame(tms_dt)
+
+```
+
+
+```{r}
+moist <- tms_full %>% 
+  filter(month(datetime_hour)!=11) %>%
+  filter(hour(datetime_hour) >= 10 & hour(datetime_hour) <= 14) %>%
+  filter(area == "vvt") %>%
+  group_by(point, dia = date(datetime_hour)) %>%              # agrupa por ponto e dia
+  summarise(media_CO2 = mean(predict_CO2, na.rm = TRUE), media_moist = mean(TMS_moist_hr, na.rm=T), .groups = "drop") %>%
+  ggplot(aes(x = dia, y = media_moist)) +
+  geom_line(linetype="dashed", size=0.4, color="gray60") +
+  facet_wrap(~point, nrow=1) +
+  theme_nothing()
+
+
+pco2 <- tms_full2 %>%
+    filter(hour(datetime_hour) >= 10 & hour(datetime_hour) <= 14) %>%
+  filter(area == "ing") %>%
+    group_by(point, dia = date(datetime_hour)) %>%  # agrupa por ponto e dia
+  summarise(media_CO2 = mean(predict_CO2, na.rm = TRUE),
+            fco2=mean(fco2, na.rm =T)) %>% 
+  filter(media_CO2<10) %>%
+  ggplot(aes(x = dia, y = media_CO2)) +
+  geom_line(color="#00BFC4") +
+  geom_point(aes(x = dia, y=fco2), shape=8, size=1, color="black") +
+  #geom_smooth() +
+  facet_wrap(~point, nrow=1) +
+  theme_clean()+
+  xlab("")+
+  ylim(c(1,7))+
+  ylab(expression("Predicted CO"[2]~" eflux (μmol/m²s)"))+
+  theme(axis.title = element_text(size=14),
+        plot.background = element_blank())
+
+
+
+
+
+pch4 <- tms_full2 %>%
+  filter(month(datetime)!=11) %>%
+  filter(hour(datetime) >= 10 & hour(datetime) <= 14) %>%
+  filter(area == "ing") %>%
+  group_by(point, dia = date(datetime)) %>%              # agrupa por ponto e dia
+  summarise(media_CH4 = mean(predict_CH4, na.rm = TRUE), fch4=mean(fch4, na.rm =T)) %>%
+  ggplot(aes(x = dia, y = media_CH4)) +
+  geom_line(color="#F8766D") +
+  geom_point(aes(x = dia, y=fch4), shape=8, size=1, color="black")+
+  #geom_smooth() +
+  #stat_cor()+
+  #(c(-1,3))+
+  facet_wrap(~point, nrow=1) +
+  theme_clean()+
+  xlab("")+
+  ylim(c(-2,2))+
+  ylab(expression("Predicted CH"[4]~" eflux (nmol/m²s)"))+
+  theme(axis.title = element_text(size=14),
+        plot.background = element_blank())
+
+setwd("G:/Meu Drive/1. Meu Computador/Pesquisa/Cary Felowship/Plots")
+
+pco2/pch4
+
+ggsave("pred_bbt.png", unit="cm", width = 25, height = 15)  
+ggsave(moist, filename="moits_bbt.png", unit="cm", width = 25, height = 6)
+
+```
+
+## Structural Equation Modeling
+
+```{r}
+library(lavaan)
+library(lavaanPlot)
+
+df_SEM <- df2 %>% select(fco2, fch4, swc, ts, C, hand_p, sand, clay, silt, month, area, hand, prec) %>%
+  mutate(fco2 = log(fco2),
+         fch4 = log(fch4+5)) %>%
+fastDummies::dummy_cols(select_columns = c("month"), remove_first_dummy = FALSE)
+
+SEM1 <- '
+swc + ts ~ prec
+swc + ts + C ~ hand_p
+swc ~ clay
+#swc ~ silt
+#swc ~ sand
+C + fco2 + fch4 ~ swc
+fco2 + fch4 ~ ts
+fco2 + fch4 ~ C
+ts ~ swc
+#sand ~~ silt
+#sand ~~ clay
+#clay~~ silt'
+
+model_SEM <- sem(SEM1, data = df_SEM) 
+
+summary(model_SEM, rsq = TRUE, fit.measures = TRUE, standardized = TRUE) 
+
+lavaanPlot(name = "model", model_SEM, coefs = TRUE)
+```
+
+```{r}
+SEM2 <- '
+swc + ts ~ month_fev
+swc + ts ~ month_set 
+#swc + ts ~ month_nov
+swc + ts + C ~ hand_p
+#swc ~ clay
+swc ~ silt
+#swc ~ sand
+C + fch4 ~ swc
+fch4 ~ ts
+fch4 ~ C
+ts ~ swc
+#sand ~~ silt
+#sand ~~ clay
+#clay~~ silt'
+
+model_SEM2 <- sem(SEM2, data = df_SEM) 
+
+summary(model_SEM2, rsq = TRUE, fit.measures = TRUE, standardized = TRUE) 
+
+lavaanPlot(name = "model", model_SEM2, coefs = TRUE)
+```
+

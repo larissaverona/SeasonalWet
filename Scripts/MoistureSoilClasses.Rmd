@@ -1,0 +1,106 @@
+---
+title: "Classes_Solos"
+author: "Larissa Verona"
+date: "2026-03-20"
+output: html_document
+---
+
+Soil classification according to TOMST reference models
+
+##1. Libraries
+```{r}
+rm(list=ls())
+library(tidyverse)
+library(cluster)
+library(factoextra)
+```
+
+##2. Data and Processing
+```{r}
+df <- read.csv("Data/Soils/Data_SoilSensors.csv", sep=";") %>% select(ID, sand_., silt_., clay_., density_gcm..3)  %>% 
+  set_names(c("ID", "sand", "silt", "clay", "den")) %>% mutate(sand =as.numeric(sand), clay = as.numeric(clay), silt= as.numeric(silt))
+
+str(df)
+df_solos <- df[1:25, 2:5]
+df_ref <- df[26:33, 2:5]
+
+df_solos_scl <- scale(df_solos)
+medias_originais <- attr(df_solos_scl, "scaled:center")
+desvios_originais <- attr(df_solos_scl, "scaled:scale")
+df_ref_scl <- scale(df_ref, 
+                    center = medias_originais,
+                    scale = desvios_originais)
+
+```
+
+##3. Clustering
+
+```{r}
+cluster <- kmeans(df_solos_scl, centers = df_ref_scl)
+df_solos$classe <- as.factor(cluster$cluster)
+cluster$tot.withinss
+```
+
+
+Second clustering method to validate
+```{r}
+#install.packages("flexclust")
+library(flexclust)
+
+# Matrix conversion (package requirement)
+data_mat <- as.matrix(df_solos_scl)
+ref_mat  <- as.matrix(df_ref_scl)
+
+# Fixed center clustering
+# family = kccaFamily("kmeans") emulates the behavior of kmeans
+cluster_flex <- kcca(data_mat, k = ref_mat, family = kccaFamily("kmeans"))
+
+# points per class
+summary(cluster_flex)
+
+# Adding to df
+df_solos$classe2 <- predict(cluster_flex)
+df_solos$ID <- df[1:25,]$ID
+df_ref$ID <- df[26:33,]$ID
+
+```
+
+least squares of kcca
+```{r}
+#getting final center
+centros_finais <- cluster_flex@centers
+
+#predictions
+atribuicoes <- predict(cluster_flex)
+
+#sum of square distances
+wss_flex <- sum((as.matrix(df_solos_scl) - centros_finais[atribuicoes, ])^2)
+
+cat("some of square (flexclust):", wss_flex, "\n")
+cat("some of square ( (kmeans):", cluster$tot.withinss, "\n")
+```
+
+Flexclust has a lower sum of squares, which is better for me. I'll use those groups then. I'll also check visually.
+
+```{r}
+df_ref$classe <- c(1:8)
+df_ref$classe2 <- c(1:8)
+
+df_final <- rbind(df_solos, df_ref) %>% mutate(classe=as.factor(classe), classe2=as.factor(classe2))
+
+ggplot(df_final, aes(x = sand, y = den, color = classe, shape = classe2)) +
+  geom_point(size = 3) + # Aumentar o tamanho ajuda na distinção
+  scale_shape_manual(values = c(16, 17, 15, 18, 1, 2, 0, 5)) +
+  theme_classic()
+
+ggplot(df_final, aes(x = den, y = sand, color = classe, shape = classe2)) +
+  geom_point(size = 3) + # Aumentar o tamanho ajuda na distinção
+  scale_shape_manual(values = c(16, 17, 15, 18, 1, 2, 0, 5)) +
+  theme_classic()
+```
+
+saving
+```{r}
+write_csv(df_final, "Data/Soils/Data_SoilClasses.csv")
+```
+

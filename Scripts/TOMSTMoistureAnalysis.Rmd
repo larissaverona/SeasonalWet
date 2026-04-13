@@ -1,0 +1,997 @@
+---
+title: "TOMSTMoisture"
+author: "Larissa Verona"
+date: "2026-04-06"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Data analises to find moisture patters with TOMST data
+
+## Data and Packages
+```{r}
+rm(list = ls())
+library(tidyverse)
+library(ggthemes)
+library(feasts)
+library(tsibble)
+library(purrr)
+library(lubridate)
+library(ggpubr)
+library(emmeans)
+library(multcomp)
+```
+
+
+```{r}
+# Check if data exists
+data_path <- "Data/Moisture/tms_data.csv"
+
+if (!file.exists(data_path)) {
+  stop(
+    "File 'tms_data.csv' not found.\n",
+    "Please download it from: https://drive.google.com/file/d/1--GgRlHxu_I2oiT_HL_feh3D9u9p3fWD/view?usp=drive_link\n",
+    "and place it in 'Data/Moisture/'."
+  )
+}
+```
+
+The data used in this analysis are generated using the script TOMSTMoistureProcessing.Rmd included in this project. Due to their large size, the data are not stored in the GitHub repository. The processed dataset is available at:
+<https://drive.google.com/file/d/1--GgRlHxu_I2oiT_HL_feh3D9u9p3fWD/view?usp=drive_link>
+.
+Please download the file and place it in the Data/Moisture/ directory.
+
+```{r}
+tms_data <- read.csv2("Data/Moisture/tms_data.csv", sep=",") %>%
+  mutate(value=as.numeric(value)) %>%
+  pivot_wider(names_from = sensor_name,
+              values_from = value,
+              id_cols = c(locality_id, datetime)) %>%
+  separate(locality_id, 
+           into=c("area", "point"), 
+           sep= "_") %>%
+  mutate( point=toupper(point),
+         area=tolower(area),
+         area=case_when(area =="7q"~"seteq",
+         TRUE ~ as.character(area)),
+         area=as.factor(area))
+
+tms_data <- tms_data %>% 
+  mutate(datetime = if_else(
+    stringr::str_detect(datetime, " "),          # já tem hora?
+    datetime,
+    paste0(datetime, " 00:00:00")          # adiciona hora
+  )) %>% 
+  mutate(datetime = ymd_hms(datetime))    # converte para POSIXct
+  
+tms_data <- tms_data %>%
+  mutate(
+    point = case_when(
+      area == "ing" & point == "P10A" ~ "P10",
+      area == "ing" & point == "P10B" ~ "P10",
+      area == "ing" & point == "P2C"  ~ "P2",
+      area == "ing" & point == "P2A"  ~ "P2",
+      area == "ing" & point == "P4A"  ~ "P4",
+      area == "ing" & point == "P6A"  ~ "P6",
+      area == "ing" & point == "P8A"  ~ "P8",
+      TRUE ~ point
+    )
+  ) %>%
+  filter(!(area == "ing" & point %in% c("P2B", "P4B", "P6B", "P8B")))
+  
+tms_data <- tms_data %>% mutate(datetime=datetime-hours(3),
+                                point=as.factor(point)) #ajustando de UTC para GMT-3
+str(tms_data)
+tms_data <- tms_data %>% filter(off_soil==0) 
+```
+
+Diary data
+```{r}
+tms_day <- tms_data %>%  mutate(day = lubridate::floor_date(datetime, unit="day")) %>%
+    group_by(area, point, day) %>%
+  summarise(TMS_moist=mean(TMS_moist), VWC_moisture=mean(VWC_moisture))
+```
+
+Week data
+```{r}
+tms_week <- tms_data %>%
+  mutate(week = lubridate::floor_date(datetime, unit = "week")) %>%
+  group_by(area, point, week) %>%
+  summarise(
+    TMS_moist = mean(TMS_moist, na.rm = TRUE),
+    VWC_moisture = mean(VWC_moisture, na.rm = TRUE),
+    .groups = "drop" 
+  )
+```
+
+
+
+## Ploting
+```{r}
+##ing
+tms_data %>% filter(area=="ing") %>%
+  mutate(dia = lubridate::floor_date(datetime, unit="day")) %>% 
+  group_by(point, dia) %>%
+  summarise(VWC_moisture=mean(VWC_moisture), TMS_moist=mean(TMS_moist)) %>%
+mutate(point=factor(point, levels=c("P1", "P2", "P3", "P4", "P5", "P6","P7", "P8", "P9", "P10"))) %>%
+  ggplot(aes(x=dia, y=VWC_moisture)) +
+  geom_line(color="darkblue")+
+  facet_wrap(~point, ncol=1) +
+  xlab("")+
+  ylab("Volumetric Water Content (%)")+
+  theme_clean()+
+  theme(axis.title = element_text(size=14),
+        axis.text = element_text(size=12)) +
+  ggtitle("ING")
+
+
+
+ggsave("Plots/moist_ing.png", unit="cm", width = 10, height = 15)  
+
+
+##vvt
+tms_data %>% filter(area=="vvt") %>%
+  mutate(dia = lubridate::floor_date(datetime, unit="day")) %>%
+    group_by(point, dia) %>%
+  summarise(VWC_moisture=mean(VWC_moisture)) %>%
+mutate(point=factor(point, levels=c("P1", "P2", "P3", "P4", "P5", "P6","P7", "P8", "P9", "P10"))) %>%
+  ggplot(aes(x=dia, y=VWC_moisture)) +
+  geom_line(color="darkblue")+
+  facet_wrap(~point, ncol=1) +
+  xlab("")+
+  ylab("Volumetric Water Content (%)")+
+  theme_clean()+
+  theme(axis.title = element_text(size=14),
+        axis.text = element_text(size=12))  +
+  ggtitle("VVT")
+
+
+ggsave("Plots/moist_vvt.png", unit="cm", width = 10, height = 15)  
+
+##cr
+tms_data %>% filter(area=="cr") %>%
+  mutate(dia = lubridate::floor_date(datetime, unit="day")) %>%
+    group_by(point, dia) %>%
+  summarise(VWC_moisture=mean(VWC_moisture)) %>%
+ mutate(point=factor(point, levels=c("P1", "P2", "P3", "P4", "P5", "P6","P7", "P8", "P9", "P10"))) %>%
+  ggplot(aes(x=dia, y=VWC_moisture)) +
+  geom_line(color="darkblue")+
+  facet_wrap(~point, ncol=1) +
+  xlab("")+
+  ylab("Volumetric Water Content (%)")+
+  theme_clean()+
+  theme(axis.title = element_text(size=14),
+        axis.text = element_text(size=12)) +
+    ggtitle("CR")
+
+
+
+ggsave("Plots/moist_cr.png", unit="cm", width = 10, height = 15)
+
+##7Q
+tms_data %>% filter(area=="seteq") %>%
+  mutate(dia = lubridate::floor_date(datetime, unit="day")) %>%
+    group_by(point, dia) %>%
+  summarise(VWC_moisture=mean(VWC_moisture)) %>%
+mutate(point=factor(point, levels=c("P1", "P2", "P3", "P4", "P5", "P6","P7", "P8", "P9", "P10"))) %>%
+  ggplot(aes(x=dia, y=VWC_moisture)) +
+  geom_line(color="darkblue")+
+  facet_wrap(~point, ncol=1) +
+  xlab("")+
+  ylab("Volumetric Water Content (%)")+
+  theme_clean()+
+  theme(axis.title = element_text(size=14),
+        axis.text = element_text(size=12)) +
+  ggtitle("7Q")
+
+
+
+ggsave("Plots/moist_7Q.png", unit="cm", width = 10, height = 15) 
+
+##BBT
+tms_data %>% filter(area=="bbt") %>%
+  mutate(dia = lubridate::floor_date(datetime, unit="day")) %>%
+    group_by(point, dia) %>%
+  summarise(VWC_moisture=mean(VWC_moisture)) %>%
+mutate(point=factor(point, levels=c("P1", "P2", "P3", "P4", "P5", "P6","P7", "P8", "P9", "P10"))) %>%
+  ggplot(aes(x=dia, y=VWC_moisture)) +
+  geom_line(color="darkblue")+
+  facet_wrap(~point, ncol=1) +
+  xlab("")+
+  ylab("Volumetric Water Content (%)")+
+  theme_clean()+
+  theme(axis.title = element_text(size=14),
+        axis.text = element_text(size=12))+
+  ggtitle("BBT")
+
+
+ggsave("Plots/moist_bbt.png", unit="cm", width = 10, height = 15) 
+
+```
+
+## Obteining Data from TS
+
+Exploring
+```{r}
+tms_day %>% 
+  filter(area == "bbt", point == "P10") %>% 
+  arrange(day) %>% 
+  pull(TMS_moist) %>% 
+ diff()  %>%   # A mágica acontece aqui: calcula a diferença entre t e t-1
+   acf(main = "Temporal Correlation for Differences - BBT P10 ")
+
+ggsave("Plots/ACF_BBT_P10.png", unit="cm", width = 10, height = 15)
+
+tms_day %>% 
+  filter(area == "bbt", point == "P3") %>% 
+  arrange(day) %>% 
+  pull(TMS_moist) %>% 
+ diff()  %>%     # A mágica acontece aqui: calcula a diferença entre t e t-1
+  acf(main = "Temporal Correlation for Differences - BBT P3 ")
+
+ggsave("Plots/ACF_BBT_P3.png", unit="cm", width = 10, height = 15)
+```
+
+### Autocorrelation and entropy
+
+Vou obter:
+- Autocorrelação temporal com lag1 a lag 10 para a série semanal de umidade --> corresponde a correlação dos valores de cada grupo de 10 semanas. 
+- Autocorrelação temporal da serie de diferenciais diárias para lag 1 a 4 --> corresponde a tendencias de subida ou descida
+- Entropia para série de 15 min
+- Entropia para série diária
+
+Data
+```{r}
+ts_15min <- tms_data %>% 
+  select(area, point, datetime, TMS_moist, VWC_moisture) %>% 
+  as_tsibble(key = c(area, point), index = datetime)
+
+ts_daily <- tms_day %>% 
+  ungroup() %>%
+  mutate(day = as.Date(day)) %>% 
+  as_tsibble(key = c(area, point), index = day)
+
+ts_weekly <- tms_week %>% 
+  ungroup() %>%
+  mutate(week = yearweek(week)) %>% 
+  as_tsibble(key = c(area, point), index = week)
+
+```
+
+Calculating ACFs and ACFs diff
+```{r}
+
+# 1. Function to lags from differential series (daily serie)
+diff_lags_feat <- function(x) {
+  dx <- diff(x)
+  # Calculamos o ACF até o lag 4
+  res <- acf(dx, plot = FALSE, na.action = na.pass, lag.max = 4)$acf
+  # O índice [1] é o lag 0, então pegamos [2:5]
+  return(list(diff_acf1 = res[2], diff_acf2 = res[3], 
+              diff_acf3 = res[4], diff_acf4 = res[5]))
+}
+
+# 2. Extracting daily metrics (Diferential lags)
+feat_daily <- ts_daily %>%
+  features(TMS_moist, diff_lags_feat)
+
+# 3. Extracting weekly metrics (Lag 1 e Lag 10)
+feat_weekly <- ts_weekly %>%
+  features(TMS_moist, feat_acf) %>%
+  select(area, point, acf1, acf10)
+
+# 4. Extracting entropy
+feat_entropy15 <- ts_15min %>%
+  features(TMS_moist, list(entropy = feat_spectral)) %>%
+  rename(entropy_15 = entropy_spectral_entropy)
+
+feat_entropyday <- ts_daily %>%
+  features(TMS_moist, list(entropy = feat_spectral))  %>%
+  rename(entropy_day = entropy_spectral_entropy)
+
+feat_entropywk <- ts_weekly %>%
+  features(TMS_moist, list(entropy = feat_spectral))  %>%
+  rename(entropy_week = entropy_spectral_entropy)
+
+TS_features <- feat_entropy15 %>%
+  left_join(feat_entropyday, by = c("area", "point")) %>% 
+  left_join(feat_entropywk, by = c("area", "point")) %>%
+  left_join(feat_weekly, by = c("area", "point")) %>%
+  left_join(feat_daily, by = c("area", "point")) %>%
+  mutate(across(starts_with("diff_acf"), as.numeric))
+```
+
+Weak patterns, apparently
+```{r}
+TS_features %>% mutate(point=factor(point, levels=c("P1", "P2", "P3", "P4", "P5", "P6","P7", "P8", "P9", "P10"))) %>%
+  ggplot(aes(x=point, y=entropy_week)) +
+  geom_point()+
+  facet_wrap(~area)
+  
+str(TS_features)
+```
+
+### Mean, SD and Saturation lenght
+
+```{r}
+# Function to count continuous days with saturation (Run Length Encoding)
+max_continuous_sat <- function(is_sat) {
+  if(!any(is_sat)) return(0)
+  runs <- rle(is_sat)
+  max(runs$lengths[runs$values == TRUE], na.rm = TRUE)
+}
+
+metrics_base <- tms_day %>%
+  group_by(area, point) %>%
+  summarise(
+    max = max(TMS_moist, na.rm = TRUE),
+    min = min(TMS_moist, na.rm = TRUE),
+    mean = mean(TMS_moist, na.rm = TRUE),
+    sd = sd(TMS_moist, na.rm = TRUE))
+    
+    # Saturation (saturated if moisture > 95% from point max)
+metrics_base2 <- tms_day %>%
+  group_by(area, point) %>%
+     mutate(is_saturated = TMS_moist >= (max(TMS_moist) * 0.95)) %>% summarise(days_sat_total = sum(is_saturated, na.rm = TRUE),
+    days_sat_cont  = max_continuous_sat(is_saturated),
+    .groups = "drop"
+  )
+
+TS_features <- left_join(TS_features, metrics_base, metrics_base2, by=c("area", "point") )
+```
+
+### Wet season stability
+
+```{r}
+stability_wet_fixed <- tms_day %>%
+  mutate(mes = month(day)) %>%
+  # filtring moisture season
+  filter(mes %in% c(12, 1, 2, 3)) %>% 
+  group_by(area, point) %>%
+  summarise(
+    wet_mean = mean(TMS_moist, na.rm = TRUE),
+    wet_sd   = sd(TMS_moist, na.rm = TRUE),
+    # low CV = High stability
+    wet_cv   = wet_sd / wet_mean, 
+    .groups = "drop"
+  )
+
+TS_features <- left_join(TS_features, stability_wet_fixed, by=c("area", "point"))
+```
+
+### Transition slope
+
+Obteining the transition segments
+```{r}
+#ploting
+tms_day %>% 
+  filter(area == "bbt") %>%
+  ggplot(aes(x = day, y = TMS_moist)) +
+  geom_line(alpha = 0.4, color = "grey50") +
+  geom_smooth(method = "loess", span = 0.5, color = "red", se = FALSE) +
+  facet_wrap(~point, scales = "free_y") +
+  theme_clean() +
+  labs(title = "Tendência de Longo Prazo via LOESS (Área BBT)",
+       subtitle = "A linha vermelha ignora ruídos e foca na dinâmica de secagem/umidificação",
+       x = "", y = "TMS Moisture")
+
+
+#find a loess function
+tms_smooth <- tms_day %>%
+  group_by(area, point) %>%
+  mutate(x_num = as.numeric(day)) %>% 
+  group_modify(~ {
+    # LOESS model fited to actual group
+    # span says how strict the model is
+    fit <- loess(TMS_moist ~ x_num, data = .x, span = 0.4)
+    # Adiciona os valores preditos  ao dataframe
+    .x %>% mutate(TMS_trend = predict(fit))
+  }) %>%
+  ungroup() %>%
+  select(-x_num)
+
+#ploting
+tms_smooth %>%
+  filter(area == "ing") %>%
+  ggplot(aes(x = day)) +
+  geom_line(aes(y = TMS_moist), alpha = 0.3) + 
+  geom_line(aes(y = TMS_trend), color = "red", size = 1) + 
+  labs(title = "Série Temporal Original vs. Dados LOESS Salvos") +
+  facet_wrap(~point)
+
+#identifing transition
+  find_recession_segment <- function(df_group) {
+  # 1. Finding the min point (drought peak)
+  idx_min <- which.min(df_group$TMS_trend)
+  
+  # 2. scan data before min
+  df_pre_min <- df_group[1:idx_min, ]
+  
+  # 3. Derivative (daily variation)
+  # We look for last derivative >=0 (start transition)
+  derivada <- diff(df_pre_min$TMS_trend)
+  
+  # Finding the last point where derivative was >= 0 before continous slope
+  idx_start <- max(which(derivada > 0)) + 1
+  
+  # If we do not find it, we use the series begging
+  if(is.infinite(idx_start)) idx_start <- 1
+  
+  # Getting the data from this point
+  df_group[idx_start:idx_min, ]
+  }
+  
+df_seg <- tms_with_trend %>%
+  group_by(area, point) %>%
+  group_modify(~ find_recession_segment(.x)) %>%
+  ungroup()
+
+# 3. Fast validation: How long was the slope in each point?
+seg_summary <- df_seg %>%
+  group_by(area, point) %>%
+  summarise(
+    transition_begin = min(day),
+    transition_end = max(day),
+    transition_duration = n(),
+    trans_total_lost = first(TMS_trend) - last(TMS_trend),
+    .groups = "drop"
+  )
+
+
+print(seg_summary)
+
+ggplot() +
+  geom_line(data = tms_smooth %>% filter(area=="vvt"), aes(x = day, y = TMS_moist), color = "grey85") +
+  geom_line(data = df_seg %>% filter(area=="vvt"), aes(x = day, y = TMS_trend), color = "blue", size = 1) +
+  facet_wrap(~point) +
+  theme_minimal() +
+  labs(title = "Transição Identificados pelo Algoritmo")
+
+TS_features <- left_join(TS_features, seg_summary, by=c("area", "point"))
+
+TS_features <- TS_features %>% mutate(transition_delay = as.Date(transition_begin) - as.Date("2024-11-02")) %>% mutate(transition_delay = as.numeric(transition_delay)) %>% select(-transition_begin, -transition_end)
+```
+
+Obteining the variation per point
+```{r}
+# Calculating the daily variation
+df_diff <- df_seg %>%
+  group_by(area, point) %>%
+  arrange(day) %>%
+  mutate(
+    slope_diario = TMS_trend - lag(TMS_trend)
+  ) %>%
+  ungroup()
+
+df_diff <- df_diff %>% filter(!is.na(slope_diario))
+
+
+df_diff %>%
+  filter(area == "cr") %>%
+  ggplot(aes(x = day, y = slope_diario)) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "grey50") +
+  # Slope line
+  geom_line(color = "firebrick", size = 1) +
+  geom_area(fill = "firebrick", alpha = 0.2) +
+  facet_wrap(~point) +
+  theme_minimal() +
+  labs(
+    title = "Instant Drying Speed (Derived from LOESS)",
+    x = "", 
+    y = "Daily variation (unit/day)"
+  )
+```
+
+Obteining transion metrics
+```{r}
+transition_metrics <- df_diff %>%
+  group_by(area, point) %>%
+  summarise(
+    # 1. Linear Slope
+    # (Final_value - Initial_value) / Delta_time
+    transition_slope = (last(TMS_trend) - first(TMS_trend)) / n(),
+    
+    # 2. Loss max speed(Derivative peak)
+    transition_max_slope = min(slope_diario, na.rm = TRUE),
+    
+    # 3. Drying stability (derivative SD)
+    transition_stability = sd(slope_diario, na.rm = TRUE),
+    
+    .groups = "drop"
+  )
+
+TS_features <- left_join(TS_features, transition_metrics, by=c("area", "point"))
+```
+
+## Soil Data
+
+```{r}
+soil <- read.csv("Data/Soils/Soil.csv", sep=";")
+
+df <- left_join(TS_features, soil %>% dplyr::select(-sand, -silt, -clay), by=c("area", "point"))
+str(df)
+```
+
+## HAND data
+
+
+```{r}
+hand <- read.csv("Data/Hand/Flux_points_HAND.csv", sep=";") %>% 
+  select("area", "point", "hand") %>% 
+  group_by(area) %>%
+  mutate(hand_p = (hand-min(hand))/(max(hand)-min(hand)))
+
+df <-  left_join(df, hand, by=c("area", "point")) %>% mutate(area=factor(area),
+       point=factor(point, levels=c("P1", "P2", "P3", "P4", "P5", "P6", "P7", "P8", "P9", "P10")))
+```
+
+
+## PCA and Clustering
+
+Scaling
+```{r}
+df_scaled <- df %>%
+  mutate(across(where(is.numeric), ~ as.vector(scale(.))))
+```
+
+PCA
+```{r}
+library(factoextra)
+
+df_numeric <- df_scaled %>% dplyr::select(where(is.numeric))
+pca_res <- prcomp(df_numeric, scale. = TRUE)
+fviz_eig(pca_res, addlabels = TRUE, ylim = c(0, 70))
+
+df_pca_scores <- pca_res$x[, 1:3]
+```
+
+```{r}
+fviz_pca_biplot(pca_res, 
+                geom.ind = "point",
+                fill.ind = df$area,
+                pointshape = 21, pointsize = 2.5,
+                palette = "jco",
+                col.var = "black",
+                alpha.var = 0.5,
+                repel = TRUE, 
+                legend.title = "Áreas") +
+  theme_minimal() 
+```
+
+K-means
+```{r}
+set.seed(123) 
+
+# K-means 1: Raw Data
+km_bruto <- kmeans(df_numeric, centers = 6, nstart = 25)
+
+# K-means 2: PCA Data
+km_pca <- kmeans(df_pca_scores, centers = 6, nstart = 25)
+
+df_final <- df %>%
+  mutate(cluster_bruto = as.factor(km_bruto$cluster),
+         cluster_pca = as.factor(km_pca$cluster))
+```
+
+```{r}
+library(patchwork) 
+
+node_labels <- paste0(df$area, "_", df$point)
+
+rownames(df_numeric) <- node_labels
+rownames(df_pca_scores) <- node_labels
+
+# K-means 1
+p1 <- fviz_cluster(km_bruto, 
+                   data = df_numeric,
+                   geom = c("point", "text"), 
+                   repel = TRUE,              
+                   pointsize = 2,
+                   labelsize = 8,
+                   main = "Clusters: Raw Data") +
+  theme_minimal()
+
+# K-means 2
+p2 <- fviz_cluster(km_pca, 
+                   data = df_pca_scores,
+                   geom = c("point", "text"), 
+                   repel = TRUE,
+                   pointsize = 2,
+                   labelsize = 8,
+                   main = "Clusters: PCA Scores") +
+  theme_minimal()
+
+p1 + p2
+
+ggsave("Plots/clusters.png", unit="cm", width = 25, height = 10)
+
+```
+
+## Soil Flux
+```{r}
+
+# 1. List all csv
+files <- list.files(
+  path = "Data/FluxProcessed",
+  pattern = "^(vvt|7q|bbt|cr|ing).+\\.csv$",
+  full.names = TRUE
+)
+
+# 2. Function to deal with different formats
+read_allfiles <- function(arq) {
+  
+  # Detect if the sep
+  sep_df <- if(grepl(";", readLines(arq, n=1))) ";" else ","
+  
+  # Metadate file
+  meta <- str_split(str_remove(arq, ".csv"), "_")[[1]]
+  
+  df_temp <- read.csv(arq, sep = sep_df, skip = 1) %>%
+    slice(-1) %>%
+    mutate(area = meta[1], month = meta[2])
+  
+  # Deal with data column name
+  if ("DATE_TIME.initial_value" %in% names(df_temp)) {
+    df_temp <- df_temp %>% rename(datetime = DATE_TIME.initial_value)
+  }
+  
+  # Deal with data formats
+  df_temp <- df_temp %>%
+    mutate(datetime = parse_date_time(datetime, orders = c("dmy HM", "ymd HMS")))
+  
+  return(df_temp)
+}
+
+# 3. Processing
+df_flux <- files %>% 
+  map_dfr(read_allfiles) %>%
+  
+  mutate(across(c(3, 4, 7:14), as.numeric),
+         across(c(2, 16, 17), as.factor)) %>%
+  rename(point = COMMENT, 
+         swc = SWC_2.mean, 
+         ts = TS_2.mean, 
+         fch4 = FCH4_DRY, 
+         fco2 = FCO2_DRY,
+         lat = LATITUDE,
+         long = LONGITUDE) %>%
+  mutate(month = factor(month, levels = c("set24", "nov24", "fev25", "jun25", "set25", "dez25"))) %>%
+  mutate(area=case_when(area =="7q"~"seteq",
+         TRUE ~ as.character(area)))
+
+str(df_flux)
+rm(files)
+```
+
+## Correlating Fluxes to Clusters
+```{r}
+df_fluxTST <- df_flux %>% dplyr::select(c("area", "point", "month", "fco2", "fch4")) %>% right_join(df_final, by=c("area", "point"))
+
+df_fluxTST %>% 
+  ggplot(aes(x=cluster_pca, y=log(fco2+1))) +
+  geom_boxplot()+
+  geom_jitter()+
+  stat_compare_means()+
+  facet_wrap(~month)
+  
+df_fluxTST %>% 
+  mutate(month = factor(month, levels = c("set24", "nov24", "fev25", "jun25", "set25", "dez25"))) %>% 
+  mutate(point2 = paste(area, point)) %>%
+  ggplot(aes(x = month, y = log(fco2 + 1), color = C, group = point2)) + 
+  geom_point(size = 1.2, alpha=0.8) +
+  geom_line(alpha = 0.5) + # Adiciona as linhas conectando os pontos +
+  theme_clean()+
+  geom_smooth(aes(group = 1), method = "loess", color = "red", linetype = "dashed", se = FALSE) +
+  facet_wrap(~cluster_pca) +
+  ggtitle("Clusters Annual Emissions") +
+  ylab(expression(log~CO[2]~(mu*mol ~ m^{-2} * s^{-1})))+
+  xlab("") +
+  labs(color="Carbon (%)")
+
+
+ggsave("Plots/Emissions_clustersco2.png", unit="cm", width = 25, height = 15)
+
+df_fluxTST %>% 
+  mutate(month = factor(month, levels = c("set24", "nov24", "fev25", "jun25", "set25", "dez25"))) %>% 
+  mutate(point2 = paste(area, point)) %>%
+  ggplot(aes(x = month, y = log(fch4+5), color = C, group = point2)) + 
+  theme_clean()+
+  geom_point (size = 1.2, alpha=0.8) +
+  geom_line(alpha = 0.5) + # Adiciona as linhas conectando os pontos +
+  geom_smooth(aes(group = 1), method = "loess", color = "red", linetype = "dashed", se = FALSE) +
+  facet_wrap(~cluster_pca) +
+     ggtitle("Clusters Annual Emissions") +
+  ylab(expression(log~CH[]~(nmol ~ m^{-2} * s^{-1})))+
+  xlab("") +
+  labs(color="Carbon (%)")
+
+
+ggsave("Plots/Emissions_clustersch4.png", unit="cm", width = 25, height = 15)
+ 
+  df_fluxTST %>% 
+  ggplot(aes(x=cluster_pca, y=log(fch4+5))) +
+  geom_boxplot()+
+  geom_jitter()+
+  stat_compare_means()+
+  facet_wrap(~month) 
+
+df_final %>% 
+  ggplot(aes(x=cluster_pca, y=C)) +
+  geom_boxplot()+
+  geom_jitter()+
+  stat_compare_means()
+
+df_final %>% 
+  ggplot(aes(x=hand, y=transition_slope)) +
+  geom_point()+
+  geom_smooth()+
+  stat_cor()
+```
+
+Plot describing clusters
+```{r}
+C <- df_final %>% 
+  ggplot(aes(x=cluster_pca, y=C)) +
+  geom_boxplot()+
+  geom_jitter()+
+  theme_clean()+
+  stat_compare_means(label = "p.format", label.x = 1)
+
+acf <- df_final %>% 
+  ggplot(aes(x=cluster_pca, y=acf10)) +
+  geom_boxplot()+
+  geom_jitter()+
+  theme_clean()+
+  stat_compare_means(label = "p.format", label.x = 1)
+
+diffacf <- df_final %>% 
+  ggplot(aes(x=cluster_pca, y=diff_acf4)) +
+  geom_boxplot()+
+  geom_jitter()+
+  theme_clean()+
+  stat_compare_means(label = "p.format", label.x = 1)
+
+entro <- df_final %>% 
+  ggplot(aes(x=cluster_pca, y=entropy_day)) +
+  geom_boxplot()+
+  geom_jitter()+
+  theme_clean()+
+  stat_compare_means(label = "p.format", label.x = 1)
+
+max <- df_final %>% 
+  ggplot(aes(x=cluster_pca, y=max)) +
+  geom_boxplot()+
+  geom_jitter()+
+  theme_clean()+
+  stat_compare_means(label = "p.format", label.x = 1)
+
+min <- df_final %>% 
+  ggplot(aes(x=cluster_pca, y=min)) +
+  geom_boxplot()+
+  geom_jitter()+
+  theme_clean()+
+  stat_compare_means(label = "p.format", label.x = 1)
+
+mean <- df_final %>% 
+  ggplot(aes(x=cluster_pca, y=mean)) +
+  geom_boxplot()+
+  geom_jitter()+
+  theme_clean()+
+  stat_compare_means(label = "p.format", label.x = 1)
+
+sd <- df_final %>% 
+  ggplot(aes(x=cluster_pca, y=sd)) +
+  geom_boxplot()+
+  geom_jitter()+
+  theme_clean()+
+  stat_compare_means(label = "p.format", label.x = 1)
+
+wet_mean <- df_final %>% 
+  ggplot(aes(x=cluster_pca, y=wet_mean)) +
+  geom_boxplot()+
+  geom_jitter()+
+  theme_clean()+
+  stat_compare_means(label = "p.format", label.x = 1)
+
+wet_cv <- df_final %>% 
+  ggplot(aes(x=cluster_pca, y=wet_cv)) +
+  geom_boxplot()+
+  geom_jitter()+
+  theme_clean()+
+  stat_compare_means(label = "p.format", label.x = 1)
+
+trans_slope<- df_final %>% 
+  ggplot(aes(x=cluster_pca, y=transition_slope)) +
+  geom_boxplot()+
+  geom_jitter()+
+  theme_clean()+
+  stat_compare_means(label = "p.format", label.x = 1)
+
+trans_delay<- df_final %>% 
+  ggplot(aes(x=cluster_pca, y=transition_delay)) +
+  geom_boxplot()+
+  geom_jitter()+
+  theme_clean()+
+  stat_compare_means(label = "p.format", label.x = 1)
+
+trans_stability<- df_final %>% 
+  ggplot(aes(x=cluster_pca, y=transition_stability)) +
+  geom_boxplot()+
+  geom_jitter()+
+  theme_clean()+
+  stat_compare_means(label = "p.format", label.x = 1)
+
+C<- df_final %>% 
+  ggplot(aes(x=cluster_pca, y=C)) +
+  geom_boxplot()+
+  geom_jitter()+
+  theme_clean()+
+  stat_compare_means(label = "p.format", label.x = 1)
+
+hand_p <- df_final %>% 
+  ggplot(aes(x=cluster_pca, y=hand_p)) +
+  geom_boxplot()+
+  geom_jitter()+
+  theme_clean()+
+  stat_compare_means(label = "p.format", label.x = 1)
+```
+
+```{r}
+
+plots <- list(
+  C = C + labs(title = "Soil Organic Carbon", x = "Cluster", y = "C (%)"),
+  acf = acf + labs(title = "Autocorrelation (Lag 10)", x = "Cluster", y = "ACF10"),
+  diffacf = diffacf + labs(title = "First Difference ACF (Lag 4)", x = "Cluster", y = "Diff ACF4"),
+  entro = entro + labs(title = "Daily Entropy", x = "Cluster", y = "Entropy"),
+  max = max + labs(title = "Maximum Soil Moisture", x = "Cluster", y = "Max VWC"),
+  min = min + labs(title = "Minimum Soil Moisture", x = "Cluster", y = "Min VWC"),
+  mean = mean + labs(title = "Mean Soil Moisture", x = "Cluster", y = "Mean VWC"),
+  sd = sd + labs(title = "Standard Deviation", x = "Cluster", y = "SD"),
+  wet_mean = wet_mean + labs(title = "Wet Period Mean", x = "Cluster", y = "Wet Mean VWC"),
+  wet_cv = wet_cv + labs(title = "Wet Period CV", x = "Cluster", y = "CV (%)"),
+  trans_slope = trans_slope + labs(title = "Transition Slope", x = "Cluster", y = "Slope (unit/day)"),
+  trans_delay = trans_delay + labs(title = "Transition Delay", x = "Cluster", y = "Days"),
+  trans_stability = trans_stability + labs(title = "Transition Stability", x = "Cluster", y = "SD of Slope"),
+  hand_p = hand_p + labs(title = "HAND (Topography)", x = "Cluster", y = "Height (m)")
+)
+```
+
+```{r}
+# Painel 1
+panel_1 <- (plots$C |  plots$hand_p|plots$max) / 
+           (plots$min | plots$mean | plots$wet_cv) /
+           (plots$entro | plots$trans_slope | plots$trans_delay) 
+
+panel_1
+
+
+ggsave("Plots/ClusterDescription.png", unit="cm", width = 30, height = 25)
+```
+
+Testing CO2
+```{r}
+anova_co2 <- aov(log(fco2+1) ~ cluster_pca*month, data=df_fluxTST)
+summary(anova_co2)
+
+em_co2 <- emmeans(anova_co2, ~ cluster_pca | month)
+pairs_co2 <- pairs(em_co2, adjust = "tukey")
+summary(pairs_co2)
+cld_co2 <- cld(em_co2, Letters = letters, adjust = "tukey")
+print(cld_co2)
+```
+
+
+```{r}
+df_letras_co2 <- as.data.frame(cld_co2) %>%
+    mutate(.group = trimws(.group)) 
+
+
+df_letras_co2 <- df_letras_co2 %>%
+  mutate(
+    erro_padrao = if("SE" %in% names(.)) SE else stderr,
+    emmean = as.numeric(emmean),
+    erro_padrao = as.numeric(erro_padrao)
+  ) %>%
+  group_by(month) %>%
+  mutate(y_pos = max(emmean, na.rm = TRUE) + (2 * max(erro_padrao, na.rm = TRUE))) %>%
+  ungroup()
+```
+
+
+```{r}
+df_fluxTST %>% 
+  mutate(month = factor(month, levels = c("set24", "nov24", "fev25", "jun25", "set25", "dez25"))) %>%
+  ggplot(aes(x = cluster_pca, y = log(fco2 + 1))) +
+  
+  # Boxplot e Jitter
+  geom_boxplot(alpha = 0.4, outlier.shape = NA) +
+  geom_jitter(alpha = 0.3, width = 0.1, color = "grey40") +
+  
+  # Camada de Letras (Post-hoc)
+  geom_text(data = df_letras_co2, 
+            aes(x = cluster_pca, y = y_pos, label = .group), 
+            vjust = -0.5,           
+            fontface = "bold", 
+            size = 4, 
+            color = "black") +
+  
+  # Facet por mês
+  facet_wrap(~month) +
+  
+  # Estética e Escalas
+  theme_clean() +
+  scale_fill_brewer(palette = "Set1") +
+  expand_limits(y = max(df_letras_co2$y_pos) * 1.1) + # Garante espaço para a letra no topo
+  labs(y = "log(fCO2 + 1)",
+       x = "Cluster")
+
+
+```
+
+Testing CH4
+```{r}
+anova_ch4 <- aov(log(fch4+5) ~ cluster_pca*month, data=df_fluxTST)
+summary(anova_ch4)
+
+em_ch4 <- emmeans(anova_ch4, ~ cluster_pca | month)
+
+pairs_ch4 <- pairs(em_ch4, adjust = "tukey")
+summary(pairs_ch4)
+
+cld_ch4 <- cld(em_ch4, Letters = letters, adjust = "tukey")
+print(cld_ch4)
+```
+
+
+```{r}
+df_letras_ch4 <- as.data.frame(cld_ch4) %>%
+    mutate(.group = trimws(.group)) 
+
+
+df_letras_ch4 <- df_letras_ch4 %>%
+  mutate(
+    erro_padrao = if("SE" %in% names(.)) SE else stderr,
+    emmean = as.numeric(emmean),
+    erro_padrao = as.numeric(erro_padrao)
+  ) %>%
+  group_by(month) %>%
+  mutate(y_pos = max(emmean, na.rm = TRUE) + (2 * max(erro_padrao, na.rm = TRUE))) %>%
+  ungroup()
+
+ggsave("Plots/cluster_fluxtestco2.png", unit="cm", width = 20, height = 15)
+```
+
+```{r}
+df_fluxTST %>% 
+  mutate(month = factor(month, levels = c("set24", "nov24", "fev25", "jun25", "set25", "dez25"))) %>%
+  ggplot(aes(x = cluster_pca, y = log(fch4 + 5))) +
+  
+
+  geom_boxplot(alpha = 0.4, outlier.shape = NA) +
+  geom_jitter(alpha = 0.3, width = 0.1, color = "grey40") +
+  
+  
+  geom_text(data = df_letras_co2, 
+            aes(x = cluster_pca, y = y_pos, label = .group), 
+            vjust = -0.5,           
+            fontface = "bold", 
+            size = 4, 
+            color = "black") +
+  
+
+  facet_wrap(~month) +
+  
+  
+  theme_clean() +
+  scale_fill_brewer(palette = "Set1") +
+  expand_limits(y = max(df_letras_co2$y_pos) * 1.1) + 
+  labs(y = "log(fCH4 + 5)",
+       x = "Cluster")
+
+
+ggsave("Plots/cluster_fluxtestch4.png", unit="cm", width = 20, height = 15)
+```
+

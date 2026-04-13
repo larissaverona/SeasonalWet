@@ -1,0 +1,482 @@
+---
+title: "AnalisesModelosSEM"
+author: "Larissa Verona"
+date: "2026-03-27"
+output: html_document
+---
+##Initial Processing
+
+### Packages 
+```{r}
+#usethis::use_git()
+#usethis::use_github(private=T)
+library(piecewiseSEM)
+library(tidyverse)
+library(lme4)
+library(performance)
+library(DHARMa)
+rm(list=ls())
+```
+
+### Flux Data
+```{r}
+# 1. List all csv
+files <- list.files(
+  path = "Data/FluxProcessed",
+  pattern = "^(vvt|7q|bbt|cr|ing).+\\.csv$",
+  full.names = TRUE
+)
+
+# 2. Function to deal with different formats
+read_allfiles <- function(arq) {
+  
+  # Detect if the sep
+  sep_df <- if(grepl(";", readLines(arq, n=1))) ";" else ","
+  
+  # Metadate file
+  meta <- str_split(str_remove(arq, ".csv"), "_")[[1]]
+  
+  df_temp <- read.csv(arq, sep = sep_df, skip = 1) %>%
+    slice(-1) %>%
+    mutate(area = meta[1], month = meta[2])
+  
+  # Deal with data column name
+  if ("DATE_TIME.initial_value" %in% names(df_temp)) {
+    df_temp <- df_temp %>% rename(datetime = DATE_TIME.initial_value)
+  }
+  
+  # Deal with data formats
+  df_temp <- df_temp %>%
+    mutate(datetime = parse_date_time(datetime, orders = c("dmy HM", "ymd HMS")))
+  
+  return(df_temp)
+}
+
+# 3. Processing
+df <- files %>% 
+  map_dfr(read_allfiles) %>%
+  
+  mutate(across(c(3, 4, 7:14), as.numeric),
+         across(c(2, 16, 17), as.factor)) %>%
+  rename(point = COMMENT, 
+         swc = SWC_2.mean, 
+         ts = TS_2.mean, 
+         fch4 = FCH4_DRY, 
+         fco2 = FCO2_DRY,
+         lat = LATITUDE,
+         long = LONGITUDE) %>%
+  mutate(month = factor(month, levels = c("set24", "nov24", "fev25", "jun25", "set25", "dez25"))) %>%
+  mutate(area=case_when(area =="7q"~"seteq",
+         TRUE ~ as.character(area)))
+
+str(df)
+rm(files)
+```
+
+### Soil Data
+
+```{r}
+soil <- read.csv("Data/Soils/Soil.csv", sep=";") 
+df <- left_join(df, soil, by=c("area", "point"))
+```
+
+### HAND Data
+(Hight Above Near Drainage)
+
+```{r}
+hand <- read.csv("Data/Hand/Flux_points_HAND.csv", sep=";") %>% 
+  select("area", "point", "hand") %>% 
+  group_by(area) %>%
+  mutate(hand_p = (hand-min(hand))/(max(hand)-min(hand)))
+
+df <- left_join(df, hand, by=c("area", "point")) %>% mutate(area=factor(area),
+       point=factor(point, levels=c("P1", "P2", "P3", "P4", "P5", "P6", "P7", "P8", "P9", "P10")))
+```
+
+### Preciptation Data
+
+```{r}
+prep <- read.csv("Data/Preciptation/Prep_CHIRPS.csv", sep=";") %>%
+  mutate(
+    month = str_replace(month, "/", ""),
+    point = ponto,
+    area = ifelse(area == "7q", "seteq", area)
+  ) %>%
+  rename(prep_wk = acum_semana,
+         prep_1mt = acum_1_mes,
+         prep_2mt = acum_2_meses,
+         prep_3mt = acum_3_meses,
+         prep_4mt = acum_4_meses,
+         prep_day = precip_dia) %>%
+  select(-c(data))
+
+df <- left_join(df, prep, by=c("area", "point", "month"))
+```
+
+## Preliminar Models
+
+Testing the preliminar models individually to see patterns
+
+Correlations
+```{r}
+df_cor <- df %>%
+  select(swc, ts, fch4, fco2, N, C, sand, silt, clay, hand, hand_p, prep_wk, prep_1mt, prep_2mt, prep_3mt, prep_4mt, prep_wk, prep_day) %>%  drop_na() 
+
+corr <- round(cor(df_cor), 2)
+
+ggcorrplot::ggcorrplot(corr, 
+           hc.order = TRUE,           
+           type = "lower",           
+           lab = TRUE,                
+           lab_size = 3,              
+           method = "circle",         #
+           colors = c("#E46726", "white", "#6D9EC1"), 
+           title = "Matriz de Correlação: Fluxos e Variáveis Ambientais",
+           ggtheme = theme_minimal())
+
+#Observações interessantes aqui: Carbono relacionado a hand e agua; swc relacionado a hand e preciptações, ch4 influenciado por ts, precip, e swc; co2 influenciado por hand, clay, N e C (efeito não é unico em todos os pontos)
+```
+
+Verifying the normality
+```{r}
+hist(df$swc)
+hist(df$C)
+hist(log(df$C))
+shapiro.test(log(df$C)) #não ficou normal pelo teste
+hist(df$prep_2mt)
+shapiro.test(df$prep_2mt) 
+hist(df$hand_p)
+hist(df$ts)
+shapiro.test(df$ts)
+hist(df$fco2)
+hist(log(df$fco2+1))
+shapiro.test(log(df$fco2+1)) #aqui sim, vale a pena transformar
+hist(df$fch4)
+shapiro.test(df$fch4)
+hist(log(df$fch4+5))
+shapiro.test(log(df$fch4+5)) #nao muda nada para ch4
+
+```
+
+
+Models
+
+For SWC
+```{r}
+
+mod_swc1 <- lmer(swc ~ scale(prep_2mt) * scale(hand) + (1|area/point), data=df)
+check_model(mod_swc1)
+simulateResiduals(fittedModel = mod_swc1) %>% plot
+sjPlot::tab_model(mod_swc1)
+sjPlot::plot_model(mod_swc1, type="pred", show.data = T)
+
+#max-min scaled hand
+mod_swc2 <- lmer(swc ~ scale(prep_2mt) * scale(hand_p) + (1|area/point), data=df)
+check_model(mod_swc2)
+simulateResiduals(fittedModel = mod_swc2) %>% plot
+sjPlot::tab_model(mod_swc2)
+sjPlot::plot_model(mod_swc2, type="pred", show.data = T)
+
+anova(mod_swc1, mod_swc2) #modelo com pred_p é melhor. 
+
+#Only prep
+mod_swc3 <- lmer(swc ~ scale(prep_2mt) + (1|area/point), data=df)
+check_model(mod_swc3)
+simulateResiduals(fittedModel = mod_swc3) %>% plot
+sjPlot::tab_model(mod_swc3)
+sjPlot::plot_model(mod_swc3, type="pred", show.data = T)
+
+#Only HAND
+mod_swc4 <- lmer(swc ~ scale(hand_p) + (1|area/point), data=df)
+check_model(mod_swc4)
+simulateResiduals(fittedModel = mod_swc4) %>% plot
+sjPlot::tab_model(mod_swc4)
+sjPlot::plot_model(mod_swc4, type="pred", show.data = T)
+
+#Null model
+mod_swc5 <- lmer(swc ~ (1|area/point), data=df)
+check_model(mod_swc5)
+simulateResiduals(fittedModel = mod_swc5) %>% plot
+sjPlot::tab_model(mod_swc5)
+```
+
+There is a strong relationship between swc and precipitation, and a weaker relationship with hand_p, but the models do not follow the assumptions.
+
+For Carbon
+```{r}
+#complete model
+mod_c1 <- lmer(log(C) ~ scale(hand_p)*scale(swc)+ (1|area), data=df)
+check_model(mod_c1)
+simulateResiduals(fittedModel = mod_c1) %>% plot()
+sjPlot::tab_model(mod_c1)
+sjPlot::plot_model(mod_c1, type="pred", show.data = T, terms="hand_p [all]")
+
+#only hand_p
+mod_c2 <- lmer(log(C) ~ scale(hand_p)+ (1|area), data=df)
+check_model(mod_c2)
+simulateResiduals(fittedModel = mod_c2) %>% plot()
+sjPlot::tab_model(mod_c2)
+sjPlot::plot_model(mod_c2, type="pred", show.data = T)
+
+#only swc
+mod_c3 <- lmer(log(C) ~ scale(swc)+ (1|area), data=df)
+check_model(mod_c3)
+simulateResiduals(fittedModel = mod_c3) %>% plot()
+sjPlot::tab_model(mod_c3)
+sjPlot::plot_model(mod_c3, type="pred", show.data = T)
+
+#null model
+mod_c4 <- lmer(log(C) ~ (1|area), data=df)
+check_model(mod_c4)
+simulateResiduals(fittedModel = mod_c4) %>% plot()
+sjPlot::tab_model(mod_c4) #low r² alone
+```
+
+For temperature
+```{r}
+mod_temp1 <- lmer(ts ~ scale(swc)*scale(prep_2mt) + (1|point2), data = df %>% mutate(point2=paste(area, point)))
+check_model(mod_temp1)
+simulateResiduals(fittedModel = mod_temp1) %>% plot()
+sjPlot::tab_model(mod_temp1)
+sjPlot::plot_model(mod_temp1, type="pred", show.data = T)
+
+
+mod_temp2 <- lmer(ts ~ (1|area), data = df)
+check_model(mod_temp2)
+simulateResiduals(fittedModel = mod_temp2) %>% plot()
+sjPlot::tab_model(mod_temp2)
+#estrutra de grupos explica bem pouco sozinha
+```
+
+For texture
+```{r}
+mod_text1 <- lmer(log(clay) ~ hand_p + (1|area), data=df)
+check_model(mod_text1)
+simulateResiduals(fittedModel = mod_text1) %>% plot()
+sjPlot::tab_model(mod_text1)
+# ual, que r² condicional. Esperava menos, é tudo grupo.
+
+mod_text2 <- lmer(clay ~ (1|area), data=df)
+check_model(mod_text2)
+simulateResiduals(fittedModel = mod_text2) %>% plot()
+sjPlot::tab_model(mod_text2)
+```
+
+For CO2 fluxes
+```{r}
+mod_co21 <- lmer(log(fco2+1) ~ scale(swc)*scale(C)*scale(ts)*scale(clay)+(swc|point2), data=df%>% mutate(point2 = paste(area, point)))
+check_model(mod_co21)
+simulateResiduals(fittedModel = mod_co21) %>% plot()
+sjPlot::tab_model(mod_co21)
+
+
+#That's great, super responsive model It needs simplification, but that's okay. I'll make individual templates.
+
+mod_co22 <- lmer(log(fco2+1) ~ scale(swc)+(swc|point2), data=df%>% mutate(point2 = paste(area, point)))
+check_model(mod_co22)
+simulateResiduals(fittedModel = mod_co22) %>% plot()
+sjPlot::tab_model(mod_co22) #swc explica bem pouco
+
+mod_co23 <- lmer(log(fco2+1) ~ scale(C)+(1|area/point), data=df)
+check_model(mod_co23)
+simulateResiduals(fittedModel = mod_co23) %>% plot()
+sjPlot::tab_model(mod_co23) #C sozinho explica bem pouco
+
+mod_co24 <- lmer(log(fco2+1) ~ scale(ts)+(1|area/point), data=df)
+check_model(mod_co24)
+simulateResiduals(fittedModel = mod_co24) %>% plot()
+sjPlot::tab_model(mod_co24) #também explica pouco mas ta super ajustado
+
+mod_co25 <- lmer(log(fco2+1) ~ scale(clay)+(1|area), data=df)
+check_model(mod_co25)
+simulateResiduals(fittedModel = mod_co25) %>% plot()
+sjPlot::tab_model(mod_co25)
+
+```
+
+For CH4 flux
+```{r}
+mod_ch41 <- lmer(log(fch4+5) ~ scale(swc)*scale(C)*scale(ts)*scale(clay)+(1|point2), data=df%>% mutate(point2 = paste(area, point)))
+check_model(mod_ch41)
+simulateResiduals(fittedModel = mod_ch41) %>% plot()
+sjPlot::tab_model(mod_ch41)
+
+#It explains little and is quite poorly adjusted. Let's look at them individually.
+
+mod_ch42 <- lmer(log(fch4+5) ~ scale(swc)+(1|point2), data=df%>% mutate(point2 = paste(area, point)))
+check_model(mod_ch42)
+simulateResiduals(fittedModel = mod_ch42) %>% plot()
+sjPlot::tab_model(mod_ch42) #swc explica bem, mas o ajuste ta ruim
+
+mod_ch43 <- lmer(log(fch4+5) ~ scale(C)+(1|area/point), data=df)
+check_model(mod_ch43)
+simulateResiduals(fittedModel = mod_ch43) %>% plot()
+sjPlot::tab_model(mod_ch43) #C sozinho explica bem pouco e quase não é significativo
+
+mod_ch44 <- lmer(log(fch4+5) ~ scale(ts)+(1|area/point), data=df)
+check_model(mod_ch44)
+simulateResiduals(fittedModel = mod_ch44) %>% plot()
+sjPlot::tab_model(mod_ch44) #também explica pouco 
+
+mod_ch45 <- lmer(log(fch4+5) ~ scale(clay)+(1|area), data=df)
+check_model(mod_ch45)
+simulateResiduals(fittedModel = mod_ch45) %>% plot()
+sjPlot::tab_model(mod_ch45) #nao explica
+
+```
+
+
+## PieceWise SEM model
+
+For CO2 fluxes
+```{r}
+
+df_psem <- df %>% mutate(point2 = paste(area, point))  %>% select(area, point,point2, prep_2mt, hand_p, swc, C, ts, sand, clay, fco2, fch4, month) %>% mutate(fco2 = log(fco2+1), fch4 = log(fch4+5), C=log(C)) %>% group_by(point2) %>%
+  mutate(swc_mean = mean(swc)) %>% mutate(swc_resid = swc-swc_mean) %>%
+  ungroup() %>%  na.omit() 
+
+psem_co2 <- psem(
+  mod1 <- lmer(swc ~ prep_2mt+hand_p+clay+ (1|area), data=df_psem),
+  mod2 <- lmer(C ~  swc_mean+hand_p+clay+ (1|area), data=df_psem),
+  mod3 <- lmer(ts ~  swc+prep_2mt + (1|area), data=df_psem),
+ # mod4 <- lmer(clay ~ hand_p + swc_mean + (1|area), data=df_psem), #I excluded clay because it is completely explained by the random element. Therefore, it is an exogenous variable.
+  mod5 <- lmer(fco2 ~ swc*ts+C+clay + (swc|area/point), data=df_psem),
+  swc_mean %~~% swc,
+  data=df_psem)
+
+
+summary(psem_co2)
+
+plot(psem_co2)
+```
+
+For CH4 fluxes
+```{r}
+psem_ch4 <- psem(
+  mod1 <- lmer(swc ~ prep_2mt+hand_p+clay+ (1|area), data=df_psem),
+  mod2 <- lmer(C ~  swc_mean+hand_p+clay+ (1|area), data=df_psem),
+  mod3 <- lmer(ts ~  swc+prep_2mt + (1|area), data=df_psem),
+ # mod4 <- lmer(clay ~ hand_p + swc_mean + (1|area), data=df_psem), #I excluded clay because it is completely explained by the random element. Therefore, it is an exogenous variable.
+  mod5 <- lmer(fch4 ~ prep_2mt+swc*ts+C+clay + (1|area/point), data=df_psem),
+  swc_mean %~~% swc,
+  data=df_psem)
+
+
+summary(psem_ch4)
+
+plot(psem_ch4)
+```
+
+## Ploting
+
+```{r}
+library(DiagrammeR)
+library(DiagrammeRsvg)
+library(rsvg)
+
+plot_SEMCO2 <- grViz("
+digraph SEM_Refined {
+  # Layout settings to create space between nodes.
+  graph [layout = dot, rankdir = TB, nodesep = 0.8, ranksep = 1.0]
+
+  # Nodes with thin borders and smaller font.
+  node [shape = box, style = 'rounded', fontname = 'Arial', 
+        fontsize = 12, penwidth = 1]
+  
+   HAND  [label = 'HAND']
+  PREP  [label = 'Precipitation']
+  SWC_M [label = 'Mean SWC']
+  CLAY  [label = 'Clay']
+  C     [label = <Soil Carbon<br/><font point-size='8'><i>R²=0.87</i></font>>]
+  SWC   [label = <Instant SWC<br/><font point-size='8'><i>R²=0.68</i></font>>]
+  TS    [label = <Soil Temp<br/><font point-size='8'><i>R²=0.39</i></font>>]
+  INT   [label = <Interaction<br/>SWC:TS>]
+  
+   FCO2  [label = <Flux CO<sub>2</sub><br/><font point-size='8'><i>R²=0.77</i></font>>, penwidth = 2]
+
+  
+  # The giants
+  SWC -> FCO2 [penwidth = 5.5, color = '#e34a33', label = '-2.47']
+  INT -> FCO2 [penwidth = 6.0, color = '#2c7fb8', label = '2.54']
+
+  # Remaining (Scale from 0.5 to 2.5)
+  SWC_M -> C [penwidth = 2.5, color = '#2c7fb8', label = '0.64']
+  PREP -> SWC [penwidth = 2.2, color = '#2c7fb8', label = '0.59']
+  C -> FCO2   [penwidth = 2.0, color = '#2c7fb8', label = '0.58']
+  HAND -> SWC [penwidth = 1.8, color = '#e34a33', label = '-0.45']
+  PREP -> TS  [penwidth = 1.4, color = '#e34a33', label = '-0.35']
+  SWC -> TS   [penwidth = 1.2, color = '#e34a33', label = '-0.32']
+  HAND -> C   [penwidth = 1.2, color = '#e34a33', label = '-0.32']
+  TS -> FCO2  [penwidth = 1.0, color = '#e34a33', label = '-0.29']
+  CLAY -> SWC [penwidth = 0.7, color = '#2c7fb8', label = '0.17']
+  CLAY -> C   [penwidth = 0.5, color = '#2c7fb8', label = '0.14']
+  
+  # Non significant
+  CLAY -> FCO2 [penwidth = 0.5, color = '#bdbdbd', style = dashed, label = 'ns']
+
+  # Correlation
+  SWC_M -> SWC [dir = both, style = dotted, color = '#bdbdbd', arrowsize = 0.5, label = '0.45']
+}
+")
+```
+
+```{r}
+plot_SEMCH4 <- grViz("
+digraph SEM_CH4 {
+  graph [layout = dot, rankdir = TB, nodesep = 0.8, ranksep = 1.0]
+
+  node [shape = box, style = 'rounded', fontname = 'Arial', 
+        fontsize = 12, penwidth = 1]
+  
+  # Variables
+  HAND  [label = 'HAND']
+  PREP  [label = 'Precipitation']
+  SWC_M [label = 'Mean SWC']
+  CLAY  [label = 'Clay']
+  C     [label = <Soil Carbon<br/><font point-size='8'><i>R²=0.87</i></font>>]
+  SWC   [label = <Instant SWC<br/><font point-size='8'><i>R²=0.68</i></font>>]
+  TS    [label = <Soil Temp<br/><font point-size='8'><i>R²=0.39</i></font>>]
+  
+  # Target: CH4 Flux
+  FCH4  [label = <Flux CH<sub>4</sub><br/><font point-size='8'><i>R²=0.45</i></font>>, penwidth = 2]
+
+  # --- RELATIONA ---
+
+  # the giant (Std.Est = 1.02)
+  SWC -> FCH4 [penwidth = 6.0, color = '#2c7fb8', label = '1.02']
+
+  # remaining
+  PREP -> FCH4 [penwidth = 2.5, color = '#2c7fb8', label = '0.36']
+  TS -> FCH4   [penwidth = 1.5, color = '#2c7fb8', label = '0.17']
+
+  # non-significant (Dashed/Gray)
+  C -> FCH4    [penwidth = 1.0, color = '#bdbdbd', style = dashed, label = 'ns']
+  CLAY -> FCH4 [penwidth = 0.5, color = '#bdbdbd', style = dashed, label = 'ns']
+
+  # structure (Repetindo os drivers do solo/clima)
+  SWC_M -> C   [penwidth = 2.5, color = '#2c7fb8', label = '0.64']
+  PREP -> SWC  [penwidth = 2.2, color = '#2c7fb8', label = '0.59']
+  HAND -> SWC  [penwidth = 1.8, color = '#e34a33', label = '-0.45']
+  PREP -> TS   [penwidth = 1.4, color = '#e34a33', label = '-0.35']
+  SWC -> TS    [penwidth = 1.2, color = '#e34a33', label = '-0.32']
+  HAND -> C    [penwidth = 1.2, color = '#e34a33', label = '-0.32']
+  CLAY -> SWC  [penwidth = 0.7, color = '#2c7fb8', label = '0.17']
+  CLAY -> C    [penwidth = 0.5, color = '#2c7fb8', label = '0.14']
+  
+  # correlation
+  SWC_M -> SWC [dir = both, style = dotted, color = '#bdbdbd', arrowsize = 0.5, label = '0.45']
+}
+")
+```
+
+```{r}
+export_svg(plot_SEMCO2) %>%
+  charToRaw() %>%
+  rsvg_png("Plots/PSEM_co2.png", width = 1890, height = 1231)
+
+
+export_svg(plot_SEMCH4) %>%
+  charToRaw() %>%
+  rsvg_png("Plots/PSEM_ch4.png", width = 1890, height = 1231)
+```
+
