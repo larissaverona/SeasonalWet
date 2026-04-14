@@ -1,6 +1,6 @@
 ## SeasonalWet
 
-This repository contains the data processing and analysis workflow for analyzing carbon dynamics in seasonal wetlands in the Cerrado. This work is part of the NSF DEB--NERC project: \*Spatial and temporal tradeoffs in CO2 and CH4 emissions in tropical wetlands\*.
+This repository contains the data processing and analysis workflow for analyzing carbon dynamics in seasonal wetlands in the Cerrado. This work is part of the NSF DEB-NERC project: Spatial and temporal tradeoffs in CO2 and CH4 emissions in tropical wetlands.
 
 ------------------------------------------------------------------------
 
