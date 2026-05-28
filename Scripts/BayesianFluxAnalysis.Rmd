@@ -1,0 +1,2146 @@
+---
+title: "Bayesian Analysis of GHG Fluxes in Seasonal Wetlands"
+author: "Larissa Verona & David Herrera"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    theme: flatly
+    code_folding: hide
+---
+
+This script fits a hierarchical Bayesian framework to understand the drivers of
+CO₂ and CH₄ fluxes in seasonal wetland gradients. The causal chain tested is:
+
+> **Climate + Topography → Soil Moisture → GHG Fluxes**
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE,
+                      cache = TRUE, fig.width = 9, fig.height = 5)
+knitr::opts_knit$set(root.dir = "..")
+if (!dir.exists("Data")) setwd("..")
+dir.create("Plots", showWarnings = FALSE)
+```
+
+## 1. Libraries
+
+```{r libraries, cache=FALSE}
+library(tidyverse)
+library(lubridate)
+library(brms)
+library(tidybayes)
+library(bayesplot)
+library(patchwork)
+library(cowplot)      # for get_legend() and plot_grid() in section 8d
+library(viridis)
+library(ggcorrplot)
+
+# nicer bayesplot theme
+bayesplot_theme_set(theme_classic(base_size = 12))
+color_scheme_set("viridis")
+```
+
+---
+
+## 2. Data Loading
+
+We replicate the data preparation from `PreliminarAnalyses.Rmd` in a condensed,
+self-contained block so this script can be run independently.
+
+```{r load-flux}
+# ── helper: read one flux CSV (handles both sep=";" and sep=",") ──────────────
+read_flux <- function(path, sep = ";", area_label, month_label,
+                      datetime_fn = dmy_hm) {
+  df <- read.csv(path, sep = sep, skip = 1) %>% slice(-1)
+  # normalise the datetime column name (varies across campaigns)
+  if ("DATE_TIME.initial_value" %in% names(df)) {
+    df <- df %>% rename(datetime = DATE_TIME.initial_value)
+  } else if (!"datetime" %in% names(df)) {
+    # last resort: use the first column
+    names(df)[1] <- "datetime"
+  }
+  df %>%
+    mutate(area     = area_label,
+           month    = month_label,
+           datetime = datetime_fn(datetime))
+}
+
+# ── field campaigns (sep=";") ─────────────────────────────────────────────────
+campaigns_semi <- list(
+  list("Data/FluxProcessed/vvt_set24.csv",   "vvt",   "set24"),
+  list("Data/FluxProcessed/7q_set24.csv",    "seteq", "set24"),
+  list("Data/FluxProcessed/bbt_set24.csv",   "bbt",   "set24"),
+  list("Data/FluxProcessed/cr_set24.csv",    "cr",    "set24"),
+  list("Data/FluxProcessed/ing_set24.csv",   "ing",   "set24"),
+  list("Data/FluxProcessed/vvt_nov24.csv",   "vvt",   "nov24"),
+  list("Data/FluxProcessed/7q_nov24.csv",    "seteq", "nov24"),
+  list("Data/FluxProcessed/bbt_nov24.csv",   "bbt",   "nov24"),
+  list("Data/FluxProcessed/cr_nov24.csv",    "cr",    "nov24"),
+  list("Data/FluxProcessed/ing_nov24.csv",   "ing",   "nov24"),
+  list("Data/FluxProcessed/vvt_fev25.csv",   "vvt",   "fev25"),
+  list("Data/FluxProcessed/7q_fev25.csv",    "seteq", "fev25"),
+  list("Data/FluxProcessed/bbt_fev25.csv",   "bbt",   "fev25"),
+  list("Data/FluxProcessed/cr_fev25.csv",    "cr",    "fev25"),
+  list("Data/FluxProcessed/ing_fev25.csv",   "ing",   "fev25"),
+  list("Data/FluxProcessed/vvt_jun25.csv",   "vvt",   "jun25"),
+  list("Data/FluxProcessed/7q_jun25.csv",    "seteq", "jun25"),
+  list("Data/FluxProcessed/bbt_jun25.csv",   "bbt",   "jun25"),
+  list("Data/FluxProcessed/cr_jun25.csv",    "cr",    "jun25"),
+  list("Data/FluxProcessed/ing_jun25.csv",   "ing",   "jun25"),
+  list("Data/FluxProcessed/vvt_set25.csv",   "vvt",   "set25"),
+  list("Data/FluxProcessed/7q_set25.csv",    "seteq", "set25"),
+  list("Data/FluxProcessed/bbt_set25.csv",   "bbt",   "set25"),
+  list("Data/FluxProcessed/cr_set25.csv",    "cr",    "set25"),
+  list("Data/FluxProcessed/ing_set25.csv",   "ing",   "set25")
+)
+
+df_semi <- map_dfr(campaigns_semi, function(x)
+  read_flux(x[[1]], sep = ";", area_label = x[[2]], month_label = x[[3]],
+            datetime_fn = dmy_hm))
+
+# ── december 2025 (sep=",", different datetime column) ───────────────────────
+campaigns_comma <- list(
+  list("Data/FluxProcessed/vvt_dez25.csv",   "vvt",   "dez25"),
+  list("Data/FluxProcessed/7q_dez25.csv",    "seteq", "dez25"),
+  list("Data/FluxProcessed/bbt_dez25.csv",   "bbt",   "dez25"),
+  list("Data/FluxProcessed/cr_dez25.csv",    "cr",    "dez25"),
+  list("Data/FluxProcessed/ing_dez25.csv",   "ing",   "dez25")
+)
+
+df_comma <- map_dfr(campaigns_comma, function(x)
+  read_flux(x[[1]], sep = ",", area_label = x[[2]], month_label = x[[3]],
+            datetime_fn = ymd_hms))
+
+# ── merge and rename key columns ──────────────────────────────────────────────
+df <- bind_rows(df_semi, df_comma) %>%
+  mutate_at(vars(3, 4, 7:14), as.numeric) %>%
+  rename(point = COMMENT,
+         swc   = SWC_2.mean,
+         ts    = TS_2.mean,
+         fch4  = FCH4_DRY,
+         fco2  = FCO2_DRY) %>%
+  mutate(
+    fch4_nmol = (fch4 / 1000) * 86400,
+    month = factor(month,
+                   levels = c("set24","nov24","fev25","jun25","set25","dez25")),
+    area  = factor(area),
+    point = factor(point,
+                   levels = paste0("P", 1:10))
+  )
+```
+
+```{r load-covariates}
+# ── soil properties ───────────────────────────────────────────────────────────
+solos <- read.csv("Data/Soils/Soil.csv", sep = ";")
+df    <- left_join(df, solos, by = c("area", "point"))
+
+# ── HAND (topographic wetness / height above nearest drainage) ────────────────
+hand <- read.csv("Data/Hand/Flux_points_HAND.csv", sep = ";") %>%
+  select(area, point, hand) %>%
+  group_by(area) %>%
+  mutate(hand_p = (hand - min(hand, na.rm = TRUE)) /
+                  (max(hand, na.rm = TRUE) - min(hand, na.rm = TRUE))) %>%
+  ungroup()
+
+df <- left_join(df, hand, by = c("area", "point")) %>%
+  mutate(area  = factor(area),
+         point = factor(point, levels = paste0("P", 1:10)))
+
+# ── monthly precipitation (WorldClim) ─────────────────────────────────────────
+prep <- read.csv("Data/Preciptation/prep_2010-2024_worldclim.csv") %>%
+  select(mes, prec) %>%
+  rename(month_num = mes)
+
+month_map <- c(set24 = 9, nov24 = 11, fev25 = 2, jun25 = 6,
+               set25 = 9, dez25 = 12)
+
+df <- df %>%
+  mutate(month_num = month_map[as.character(month)]) %>%
+  left_join(prep, by = "month_num")
+
+# ── unique point identifier for random effects ─────────────────────────────────
+df <- df %>%
+  mutate(point2 = paste(area, point))
+
+cat("Rows:", nrow(df), "| Areas:", nlevels(df$area),
+    "| Points:", length(unique(df$point2)),
+    "| Campaigns:", nlevels(df$month), "\n")
+```
+
+---
+
+## 3. Analytical Dataset
+
+We filter to rows with complete observations for all focal variables, log-transform
+the fluxes (CO₂ must be positive; CH₄ gets a +5 offset to handle near-zero/negative values),
+and standardise all continuous predictors to mean 0 / SD 1 for interpretable
+and efficient sampling.
+
+```{r build-analysis-df}
+df_an <- df %>%
+  select(fco2, fch4, swc, ts, hand, hand_p, prec, C,
+         area, point, point2, month) %>%
+  filter(fco2 > 0) %>%                         # log requires positive values
+  mutate(
+    log_fco2  = log(fco2),
+    log_fch4  = log(fch4 + 5),                 # +5 shifts distribution positive
+    swc_s     = as.numeric(scale(swc)),
+    ts_s      = as.numeric(scale(ts)),
+    hand_s    = as.numeric(scale(hand_p)),      # relative HAND within each area
+    prec_s    = as.numeric(scale(prec)),
+    C_s       = as.numeric(scale(C)),
+    swc_beta  = pmin(pmax(swc, 1e-4), 1 - 1e-4),  # clamped to (0,1) strict for Beta regression
+    fch4_pos  = fch4 + 5,                          # shifted to strictly positive for Gamma regression
+    fch4_hurdle = if_else(fch4 <= 0, 0, fch4)     # true zeros for hurdle model: 0 = aerobic/no emission, >0 = active methanogenesis
+  ) %>%
+  drop_na(log_fco2, log_fch4, swc_s, ts_s, hand_s, prec_s)
+
+cat("Analysis dataset:", nrow(df_an), "observations\n")
+```
+
+### Quick overview
+
+```{r eda, fig.height=7}
+# Distribution of key variables
+p1 <- ggplot(df_an, aes(x = swc, fill = area)) +
+  geom_density(alpha = 0.5) + scale_fill_viridis_d() +
+  labs(title = "Soil Water Content", x = "SWC", fill = "Area") + theme_classic()
+
+p2 <- ggplot(df_an, aes(x = log_fco2, fill = area)) +
+  geom_density(alpha = 0.5) + scale_fill_viridis_d() +
+  labs(title = "log(CO₂ flux)", x = "log(fco2)", fill = "Area") + theme_classic()
+
+p3 <- ggplot(df_an, aes(x = log_fch4, fill = area)) +
+  geom_density(alpha = 0.5) + scale_fill_viridis_d() +
+  labs(title = "log(CH₄ flux + 5)", x = "log(fch4+5)", fill = "Area") + theme_classic()
+
+p4 <- ggplot(df_an, aes(x = C, fill = area)) +
+  geom_density(alpha = 0.5) + scale_fill_viridis_d() +
+  labs(title = "Carbon content", x = "C (%)", fill = "Area") + theme_classic()
+
+(p1 + p2) / (p3 + p4) + plot_layout(guides = "collect")
+```
+
+```{r corr-plot, fig.height=5}
+df_an %>%
+  select(swc, ts, hand_p, prec, C, fco2, fch4) %>%
+  drop_na() %>%
+  cor(use = "pairwise.complete.obs") %>%
+  ggcorrplot(hc.order = TRUE, type = "lower", lab = TRUE, lab_size = 3,
+             colors = c("#2166ac","white","#b2182b"),
+             title = "Pairwise correlations — focal variables")
+```
+
+---
+
+## 4. Model 1 — Drivers of Soil Moisture
+
+**Question:** How do temperature, precipitation, and topographic position (HAND) drive soil moisture, and does this vary across wetland areas?
+
+**Formula:** `swc ~ ts + prec + hand + (1 | area)`
+
+```{r mod-swc, results="hide"}
+prior_swc <- c(
+  prior(normal(0, 1),   class = "b"),          # slopes
+  prior(normal(0, 1),   class = "Intercept"),   # global mean
+  prior(exponential(1), class = "sd"),           # among-area SD
+  prior(exponential(1), class = "sigma")         # residual SD
+)
+
+mod_swc_path <- "Data/mod_swc.rds"
+
+if (file.exists(mod_swc_path)) {
+  mod_swc <- readRDS(mod_swc_path)
+} else {
+  mod_swc <- brm(
+    swc_s ~ ts_s + prec_s + hand_s + (1 | area),
+    data    = df_an,
+    family  = gaussian(),
+    prior   = prior_swc,
+    iter    = 4000,
+    warmup  = 1000,
+    chains  = 4,
+    cores   = 4,
+    seed    = 42,
+    control = list(adapt_delta = 0.95)
+  )
+  saveRDS(mod_swc, mod_swc_path)
+}
+```
+
+```{r mod-swc-summary}
+summary(mod_swc)
+```
+
+```{r mod-swc-plots, fig.height=6}
+# ── Posterior coefficient plot ─────────────────────────────────────────────────
+post_swc <- as_draws_df(mod_swc) %>%
+  select(starts_with("b_")) %>%
+  pivot_longer(everything(), names_to = "parameter", values_to = "value") %>%
+  filter(parameter != "b_Intercept") %>%
+  mutate(parameter = recode(parameter,
+    "b_ts_s"   = "Temperature",
+    "b_prec_s" = "Precipitation",
+    "b_hand_s" = "HAND (topo. position)"
+  ))
+
+p_swc_coef <- ggplot(post_swc, aes(x = value, y = parameter, fill = after_stat(x > 0))) +
+  stat_halfeye(.width = c(0.66, 0.95), point_interval = median_hdi) +
+  geom_vline(xintercept = 0, linetype = "dashed", colour = "grey40") +
+  scale_fill_manual(values = c("#4575b4","#d73027"), guide = "none") +
+  labs(title    = "Model 1 — Soil Moisture Drivers",
+       subtitle = "Posterior distributions of standardised coefficients",
+       x = "Effect on SWC (SD units)", y = NULL) +
+  theme_classic(base_size = 13)
+
+# ── Conditional effects ────────────────────────────────────────────────────────
+ce_swc <- conditional_effects(mod_swc, effects = c("ts_s","prec_s","hand_s"),
+                               re_formula = NA)  # marginalised over areas
+
+p_ts   <- plot(ce_swc, plot = FALSE)[[1]] +
+  labs(x = "Temperature (std.)", y = "SWC (std.)", title = "Effect of Temp.") +
+  theme_classic()
+p_prec <- plot(ce_swc, plot = FALSE)[[2]] +
+  labs(x = "Precipitation (std.)", y = NULL, title = "Effect of Precip.") +
+  theme_classic()
+p_hand <- plot(ce_swc, plot = FALSE)[[3]] +
+  labs(x = "HAND — topo. position (std.)", y = NULL, title = "Effect of HAND") +
+  theme_classic()
+
+p_swc_coef / (p_ts + p_prec + p_hand)
+ggsave("Plots/Bayes_M1_SoilMoisture.pdf", width = 10, height = 8)
+```
+
+```{r mod-swc-ranef, fig.height=4}
+# ── Random effects: how much does each area differ? ───────────────────────────
+ranef_swc <- ranef(mod_swc)$area %>%
+  as.data.frame() %>%
+  rownames_to_column("area") %>%
+  rename(est = Estimate.Intercept,
+         lo  = Q2.5.Intercept,
+         hi  = Q97.5.Intercept) %>%
+  mutate(area = recode(area,
+    vvt   = "Vale Verde",   bbt = "Mulungu",
+    cr    = "Couros",       ing = "Ingleses",
+    seteq = "Sete Quedas"
+  ))
+
+ggplot(ranef_swc, aes(x = reorder(area, est), y = est, ymin = lo, ymax = hi)) +
+  geom_hline(yintercept = 0, linetype = "dashed", colour = "grey50") +
+  geom_linerange(size = 1.2, colour = "#4575b4") +
+  geom_point(size = 3, colour = "#4575b4") +
+  coord_flip() +
+  labs(title    = "Model 1 — Area-level random intercepts",
+       subtitle = "Deviation from mean SWC after accounting for climate + topography",
+       x = NULL, y = "Random intercept (SWC, std.)") +
+  theme_classic(base_size = 13)
+ggsave("Plots/Bayes_M1_AreaRanef.pdf", width = 7, height = 4)
+```
+
+---
+
+## 4b. Model 1b — Beta regression for bounded SWC *(NEW)*
+
+> **Why Beta regression?** SWC is a proportion bounded to \[0, 1\]. The Gaussian
+> model in M1 treats SWC as unbounded: it can produce predicted values outside
+> the valid range and tends to underestimate uncertainty near 0 and 1. A **Beta
+> regression** (with a logit link) respects the bounded support natively —
+> predictions are always valid proportions and the residual variance shrinks
+> automatically near the boundary. Comparing M1b to M1 also tells us how much
+> the Gaussian approximation mattered.
+>
+> **Note on coefficients:** they are on the **logit(SWC)** scale. Signs and
+> relative magnitudes match M1; `conditional_effects()` back-transforms to
+> the natural \[0, 1\] scale for the plots.
+
+```{r mod-swc-beta, results="hide", cache=FALSE}
+# ── NEW (4b): Beta regression for SWC as a bounded [0,1] outcome ──────────────
+# swc_beta is swc clamped to (1e-4, 1-1e-4) so Beta() is well-defined.
+# Predictors remain standardised; only the family changes.
+prior_swc_beta <- c(
+  prior(normal(0, 1),   class = "b"),
+  prior(normal(0, 2),   class = "Intercept"),
+  prior(exponential(1), class = "sd"),
+  prior(exponential(1), class = "phi")      # Beta precision: larger = less dispersion
+)
+
+# ── cache name updated (_month) so a fresh fit is triggered automatically ─────
+mod_swc_beta_path <- "Data/mod_swc_beta_month.rds"
+
+if (file.exists(mod_swc_beta_path)) {
+  mod_swc_beta <- readRDS(mod_swc_beta_path)
+} else {
+  mod_swc_beta <- brm(
+    # (1|month) added: each campaign gets its own SWC intercept,
+    # capturing the dry-season / wet-season bimodality seen in pp_check.
+    swc_beta ~ ts_s + prec_s + hand_s + (1 | area) + (1 | month),
+    data    = df_an,
+    family  = Beta(),
+    prior   = c(prior_swc_beta,
+                prior(exponential(1), class = "sd", group = "month")),
+    iter    = 4000,
+    warmup  = 1000,
+    chains  = 4,
+    cores   = 4,
+    seed    = 42,
+    control = list(adapt_delta = 0.97)   # slightly higher for extra RE
+  )
+  saveRDS(mod_swc_beta, mod_swc_beta_path)
+}
+```
+
+```{r mod-swc-beta-summary, cache=FALSE}
+# ── NEW (4b): summary — b coefficients on logit(SWC) scale ───────────────────
+summary(mod_swc_beta)
+```
+
+```{r mod-swc-beta-plots, fig.height=6}
+# ── NEW (4b): posterior coefficient plot ──────────────────────────────────────
+post_swc_beta <- as_draws_df(mod_swc_beta) %>%
+  select(starts_with("b_")) %>%
+  pivot_longer(everything(), names_to = "parameter", values_to = "value") %>%
+  filter(parameter != "b_Intercept") %>%
+  mutate(parameter = recode(parameter,
+    "b_ts_s"   = "Temperature",
+    "b_prec_s" = "Precipitation",
+    "b_hand_s" = "HAND (topo. position)"
+  ))
+
+p_swc_beta_coef <- ggplot(post_swc_beta,
+       aes(x = value, y = parameter, fill = after_stat(x > 0))) +
+  stat_halfeye(.width = c(0.66, 0.95), point_interval = median_hdi) +
+  geom_vline(xintercept = 0, linetype = "dashed", colour = "grey40") +
+  scale_fill_manual(values = c("#4575b4","#d73027"), guide = "none") +
+  labs(title    = "Model 1b — Soil Moisture Drivers (Beta regression)",
+       subtitle = "Coefficients on logit(SWC) scale — direction should match M1 Gaussian",
+       x = "Effect on logit(SWC)", y = NULL) +
+  theme_classic(base_size = 13)
+
+# conditional_effects back-transforms to the [0,1] scale automatically
+ce_swc_beta <- conditional_effects(mod_swc_beta,
+                                   effects    = c("ts_s","prec_s","hand_s"),
+                                   re_formula = NA)
+
+p_ts_b   <- plot(ce_swc_beta, plot = FALSE)[[1]] +
+  labs(x = "Temperature (std.)", y = "SWC (prop.)", title = "Effect of Temp.") +
+  theme_classic()
+p_prec_b <- plot(ce_swc_beta, plot = FALSE)[[2]] +
+  labs(x = "Precipitation (std.)", y = NULL, title = "Effect of Precip.") +
+  theme_classic()
+p_hand_b <- plot(ce_swc_beta, plot = FALSE)[[3]] +
+  labs(x = "HAND (std.)", y = NULL, title = "Effect of HAND") +
+  theme_classic()
+
+p_swc_beta_coef / (p_ts_b + p_prec_b + p_hand_b)
+ggsave("Plots/Bayes_M1b_SWC_Beta.pdf", width = 10, height = 8)
+```
+
+```{r mod-swc-beta-ppcheck, fig.height=4}
+# ── NEW (4b): posterior predictive check — does Beta capture the [0,1] shape? ─
+pp_check(mod_swc_beta, ndraws = 100) +
+  ggtitle("M1b — Posterior predictive check: Beta regression for SWC") +
+  theme_classic()
+```
+
+---
+
+## 5. Model 2 — CO₂ Flux Drivers
+
+**Question:** How does soil moisture (and temperature and topography) drive CO₂ emissions, and does this vary by point, area, and season?
+
+**Formula:** `log(fco2) ~ swc + ts + hand + (1|area) + (1|point2) + (1|month)`
+
+```{r mod-co2, results="hide"}
+prior_flux <- c(
+  prior(normal(0, 1),   class = "b"),
+  prior(normal(0, 2),   class = "Intercept"),
+  prior(exponential(1), class = "sd"),
+  prior(exponential(1), class = "sigma")
+)
+
+mod_co2_path <- "Data/mod_co2.rds"
+
+if (file.exists(mod_co2_path)) {
+  mod_co2 <- readRDS(mod_co2_path)
+} else {
+  mod_co2 <- brm(
+    log_fco2 ~ swc_s + ts_s + hand_s + (1 | area) + (1 | point2) + (1 | month),
+    data    = df_an,
+    family  = gaussian(),
+    prior   = prior_flux,
+    iter    = 4000,
+    warmup  = 1000,
+    chains  = 4,
+    cores   = 4,
+    seed    = 42,
+    control = list(adapt_delta = 0.95)
+  )
+  saveRDS(mod_co2, mod_co2_path)
+}
+```
+
+```{r mod-co2-summary}
+summary(mod_co2)
+```
+
+```{r mod-co2-plots, fig.height=6}
+post_co2 <- as_draws_df(mod_co2) %>%
+  select(starts_with("b_")) %>%
+  pivot_longer(everything(), names_to = "parameter", values_to = "value") %>%
+  filter(parameter != "b_Intercept") %>%
+  mutate(parameter = recode(parameter,
+    "b_swc_s"  = "Soil Moisture",
+    "b_ts_s"   = "Temperature",
+    "b_hand_s" = "HAND (topo. position)"
+  ))
+
+p_co2_coef <- ggplot(post_co2, aes(x = value, y = parameter, fill = after_stat(x > 0))) +
+  stat_halfeye(.width = c(0.66, 0.95), point_interval = median_hdi) +
+  geom_vline(xintercept = 0, linetype = "dashed", colour = "grey40") +
+  scale_fill_manual(values = c("#4575b4","#d73027"), guide = "none") +
+  labs(title    = "Model 2 — CO₂ Flux Drivers",
+       subtitle = "Posterior distributions of standardised coefficients",
+       x = "Effect on log(CO₂) (SD units)", y = NULL) +
+  theme_classic(base_size = 13)
+
+ce_co2 <- conditional_effects(mod_co2,
+                               effects  = c("swc_s","ts_s","hand_s"),
+                               re_formula = NA)
+
+p_swc2  <- plot(ce_co2, plot = FALSE)[[1]] +
+  labs(x = "SWC (std.)", y = "log(CO₂)", title = "Effect of SWC") + theme_classic()
+p_ts2   <- plot(ce_co2, plot = FALSE)[[2]] +
+  labs(x = "Temperature (std.)", y = NULL, title = "Effect of Temp.") + theme_classic()
+p_hand2 <- plot(ce_co2, plot = FALSE)[[3]] +
+  labs(x = "HAND (std.)", y = NULL, title = "Effect of HAND") + theme_classic()
+
+p_co2_coef / (p_swc2 + p_ts2 + p_hand2)
+ggsave("Plots/Bayes_M2_CO2_linear.pdf", width = 10, height = 8)
+```
+
+---
+
+## 5b. Non-linear CO₂ ~ SWC relationship *(NEW)*
+
+> **Motivation:** the linear model above forces a straight line through what may be
+> a unimodal (inverted-U) relationship. At low moisture, microbial activity is
+> drought-limited; at high moisture, anaerobic conditions suppress aerobic
+> decomposition; the optimum lies somewhere in between (~0.3 SWC observed
+> previously). The linear term would split the difference and likely return a
+> near-zero or weakly positive slope, hiding the real pattern.
+>
+> **Fixes:** (1) a raw GAM smooth to confirm the curve exists in the data;
+> (2) a Bayesian model with a quadratic SWC term; (3) formal model comparison
+> with LOO-CV to verify the non-linearity is not just noise; (4) back-calculation
+> of the optimum moisture point with full posterior uncertainty.
+
+### Raw data check — GAM smooth by area *(NEW)*
+
+```{r co2-gam-check, fig.height=6, fig.width=10}
+# ── NEW: visualise the raw shape before fitting any model ─────────────────────
+# A GAM smooth (k=5 knots) is flexible enough to reveal a parabola without
+# over-fitting. If the inverted-U is real it should appear in most areas.
+library(mgcv)   # for GAM; loaded here so it is explicit
+
+ggplot(df_an, aes(x = swc, y = log_fco2)) +
+  geom_point(alpha = 0.25, colour = "grey60", size = 1.5) +
+  geom_smooth(method = "gam", formula = y ~ s(x, k = 5),
+              colour = "#d73027", fill = "#d73027", alpha = 0.2, linewidth = 1) +
+  facet_wrap(~area, scales = "free_x",
+             labeller = as_labeller(c(vvt   = "Vale Verde",
+                                      bbt   = "Mulungu",
+                                      cr    = "Couros",
+                                      ing   = "Ingleses",
+                                      seteq = "Sete Quedas"))) +
+  labs(title    = "Raw log(CO₂) ~ SWC — GAM smooth per area",
+       subtitle = "Look for the inverted-U: low flux at dry AND at saturated ends",
+       x = "Soil Water Content (raw)", y = "log(CO₂)") +
+  theme_classic(base_size = 12) +
+  theme(strip.background = element_blank(),
+        strip.text = element_text(face = "bold"))
+
+ggsave("Plots/Bayes_CO2_GAM_check.pdf", width = 10, height = 6)
+```
+
+### Model 2b — quadratic CO₂ model *(NEW)*
+
+**Formula:** `log(fco2) ~ swc + swc² + ts + hand + (1|area) + (1|point2) + (1|month)`
+
+The quadratic term `I(swc_s^2)` captures the curvature. A **negative** posterior
+for this coefficient confirms the inverted-U (peak somewhere in the middle of the
+SWC range); a positive coefficient would indicate a U-shape (rare ecologically).
+
+```{r mod-co2-quad, results="hide"}
+# ── NEW: fit quadratic model and cache ────────────────────────────────────────
+mod_co2_quad_path <- "Data/mod_co2_quad.rds"
+
+if (file.exists(mod_co2_quad_path)) {
+  mod_co2_quad <- readRDS(mod_co2_quad_path)
+} else {
+  mod_co2_quad <- brm(
+    # swc_s² added alongside the linear term
+    log_fco2 ~ swc_s + I(swc_s^2) + ts_s + hand_s +
+               (1 | area) + (1 | point2) + (1 | month),
+    data    = df_an,
+    family  = gaussian(),
+    prior   = prior_flux,          # same weakly-informative priors as M2
+    iter    = 4000,
+    warmup  = 1000,
+    chains  = 4,
+    cores   = 4,
+    seed    = 42,
+    control = list(adapt_delta = 0.95)
+  )
+  saveRDS(mod_co2_quad, mod_co2_quad_path)
+}
+```
+
+```{r mod-co2-quad-summary}
+# ── NEW: summarise quadratic model ────────────────────────────────────────────
+# Key things to look at:
+#   b_swc_s       → linear slope (positive = generally rising with moisture)
+#   b_Iswc_sE2    → curvature (negative = inverted-U, i.e. a peak exists)
+summary(mod_co2_quad)
+```
+
+### Posterior coefficient plot — quadratic model *(NEW)*
+
+```{r mod-co2-quad-coef, fig.height=4, fig.width=8}
+# ── NEW: extract and plot posteriors for the quadratic model ──────────────────
+post_co2_quad <- as_draws_df(mod_co2_quad) %>%
+  select(starts_with("b_")) %>%
+  pivot_longer(everything(), names_to = "parameter", values_to = "value") %>%
+  filter(parameter != "b_Intercept") %>%
+  mutate(parameter = recode(parameter,
+    "b_swc_s"      = "SWC (linear)",
+    "b_Iswc_sE2"   = "SWC² (curvature)",   # negative = inverted-U
+    "b_ts_s"       = "Temperature",
+    "b_hand_s"     = "HAND (topo. position)"
+  ))
+
+ggplot(post_co2_quad,
+       aes(x = value, y = parameter, fill = after_stat(x > 0))) +
+  stat_halfeye(.width = c(0.66, 0.95), point_interval = median_hdi) +
+  geom_vline(xintercept = 0, linetype = "dashed", colour = "grey40") +
+  scale_fill_manual(values = c("#4575b4","#d73027"), guide = "none") +
+  labs(title    = "Model 2b — CO₂ Quadratic Model",
+       subtitle = "Negative 'SWC² curvature' = inverted-U response (optimum moisture)",
+       x = "Effect on log(CO₂) (SD units)", y = NULL) +
+  theme_classic(base_size = 13)
+
+ggsave("Plots/Bayes_M2b_CO2_quad_coef.pdf", width = 8, height = 4)
+```
+
+### Optimal SWC — where is the CO₂ peak? *(NEW)*
+
+```{r co2-peak, fig.height=4, fig.width=7}
+# ── NEW: back-calculate the SWC peak from the posterior ───────────────────────
+# For y = b1*x + b2*x², the vertex (peak) is at x* = -b1 / (2*b2).
+# We compute this for every posterior draw to get full uncertainty on the peak.
+
+swc_mean <- mean(df_an$swc, na.rm = TRUE)
+swc_sd   <- sd(df_an$swc,   na.rm = TRUE)
+
+peak_draws <- as_draws_df(mod_co2_quad) %>%
+  mutate(
+    peak_scaled = -b_swc_s / (2 * b_Iswc_sE2),   # peak on standardised scale
+    peak_raw    = peak_scaled * swc_sd + swc_mean  # back to raw SWC units
+  )
+
+cat(sprintf(
+  "Estimated SWC optimum for CO₂: %.3f  [95%% CI: %.3f, %.3f]\n",
+  median(peak_draws$peak_raw),
+  quantile(peak_draws$peak_raw, 0.025),
+  quantile(peak_draws$peak_raw, 0.975)
+))
+
+# Plot the posterior distribution of the peak
+ggplot(peak_draws, aes(x = peak_raw)) +
+  geom_histogram(bins = 60, fill = "#d73027", alpha = 0.7, colour = "white") +
+  geom_vline(xintercept = median(peak_draws$peak_raw),
+             colour = "black", linewidth = 1) +
+  geom_vline(xintercept = quantile(peak_draws$peak_raw, c(0.025, 0.975)),
+             colour = "black", linewidth = 0.6, linetype = "dashed") +
+  labs(title    = "Posterior distribution of SWC optimum for CO₂",
+       subtitle = "Solid line = median, dashed = 95% credible interval",
+       x = "Optimal Soil Water Content (raw units)", y = "Posterior draws") +
+  theme_classic(base_size = 13)
+
+ggsave("Plots/Bayes_CO2_SWC_optimum.pdf", width = 7, height = 4)
+```
+
+### Fitted curve with peak annotation *(NEW)*
+
+```{r co2-quad-curve, fig.height=5, fig.width=8}
+# ── NEW: plot the fitted quadratic curve with credible ribbon ─────────────────
+# We predict along the full SWC range, marginalising over all random effects.
+swc_seq <- seq(-2.5, 2.5, length.out = 80)
+
+pred_quad <- expand_grid(
+  swc_s  = swc_seq,
+  ts_s   = 0,       # held at mean temperature
+  hand_s = 0,       # held at mean HAND
+  area   = unique(df_an$area)[1],
+  point2 = unique(df_an$point2)[1],
+  month  = unique(df_an$month)[1]
+) %>%
+  add_epred_draws(mod_co2_quad, ndraws = 500, re_formula = NA) %>%
+  group_by(swc_s) %>%
+  summarise(med = median(.epred),
+            lo  = quantile(.epred, 0.10),
+            hi  = quantile(.epred, 0.90),
+            .groups = "drop") %>%
+  mutate(swc_raw = swc_s * swc_sd + swc_mean)   # back to original units for x-axis
+
+peak_med <- median(peak_draws$peak_raw)
+
+ggplot(pred_quad, aes(x = swc_raw)) +
+  # raw data in background
+  geom_point(data = df_an, aes(x = swc, y = log_fco2),
+             alpha = 0.2, colour = "grey60", size = 1.2, inherit.aes = FALSE) +
+  # credible ribbon + fitted line
+  geom_ribbon(aes(ymin = lo, ymax = hi), alpha = 0.25, fill = "#d73027") +
+  geom_line(aes(y = med), colour = "#d73027", linewidth = 1.4) +
+  # peak annotation
+  geom_vline(xintercept = peak_med,
+             linetype = "dashed", colour = "grey30", linewidth = 0.8) +
+  annotate("text",
+           x     = peak_med + 0.01,
+           y     = max(pred_quad$med) * 0.97,
+           label = sprintf("Optimum ≈ %.2f", peak_med),
+           hjust = 0, colour = "grey20", size = 4.5) +
+  labs(title    = "Unimodal CO₂ response to soil moisture",
+       subtitle = "Bayesian quadratic model — 80% credible ribbon (random effects marginalised)",
+       x        = "Soil Water Content (raw units)",
+       y        = "Predicted log(CO₂)") +
+  theme_classic(base_size = 13)
+
+ggsave("Plots/Bayes_M2b_CO2_quad_curve.pdf", width = 8, height = 5)
+```
+
+### Model comparison: linear vs. quadratic *(NEW)*
+
+```{r loo-compare, warning=TRUE}
+# ── NEW: LOO-CV comparison — is the quadratic significantly better? ────────────
+# elpd_diff > 0 for the first row (best model); a |diff| >> SE means clear win.
+mod_co2      <- add_criterion(mod_co2,      "loo")
+mod_co2_quad <- add_criterion(mod_co2_quad, "loo")
+
+cat("=== LOO-CV comparison: linear (M2) vs. quadratic (M2b) ===\n")
+print(loo_compare(mod_co2, mod_co2_quad))
+cat("\nIf M2b (quadratic) is in row 1, it fits better.\n")
+cat("A |elpd_diff| > 2 × se_diff is considered substantial.\n")
+```
+
+---
+
+## 5c. Model 2c — CO₂ with organic carbon predictor *(NEW)*
+
+> **Motivation:** Temperature and season are correlated — `ts_s` partly captures
+> seasonal effects already absorbed by the `(1|month)` random intercept. Replacing
+> it with **soil organic carbon (C%)** asks a complementary question: does the
+> *substrate pool* (long-term C accumulation driven by hydrology and productivity)
+> explain flux variation beyond topography and moisture alone? C% is measured once
+> per point, so it captures spatial — not temporal — heterogeneity.
+>
+> **Formula:** `log(fco2) ~ swc + swc² + C + hand + (1|area) + (1|point2) + (1|month)`
+>
+> The quadratic SWC structure from M2b is retained as the best shape. Sample size
+> will be slightly smaller than M2b because not all flux observations have C data.
+
+```{r mod-co2-C, results="hide"}
+# ── NEW (5c): CO₂ quadratic model with organic carbon replacing temperature ─────
+# Using drop_na(C_s) inside data= keeps the model self-consistent without
+# modifying df_an (so M2/M2b remain comparable on their original dataset).
+mod_co2_C_path <- "Data/mod_co2_C.rds"
+
+if (file.exists(mod_co2_C_path)) {
+  mod_co2_C <- readRDS(mod_co2_C_path)
+} else {
+  mod_co2_C <- brm(
+    log_fco2 ~ swc_s + I(swc_s^2) + C_s + hand_s +
+               (1 | area) + (1 | point2) + (1 | month),
+    data    = df_an %>% drop_na(C_s),
+    family  = gaussian(),
+    prior   = prior_flux,           # same weakly-informative priors as M2/M2b
+    iter    = 4000,
+    warmup  = 1000,
+    chains  = 4,
+    cores   = 4,
+    seed    = 42,
+    control = list(adapt_delta = 0.95)
+  )
+  saveRDS(mod_co2_C, mod_co2_C_path)
+}
+```
+
+```{r mod-co2-C-summary}
+# ── NEW (5c): summary ─────────────────────────────────────────────────────────
+cat("n =", nrow(df_an %>% drop_na(C_s)), "observations with soil C data\n")
+summary(mod_co2_C)
+```
+
+```{r mod-co2-C-coef, fig.height=4, fig.width=8}
+# ── NEW (5c): posterior coefficient plot ──────────────────────────────────────
+post_co2_C <- as_draws_df(mod_co2_C) %>%
+  select(starts_with("b_")) %>%
+  pivot_longer(everything(), names_to = "parameter", values_to = "value") %>%
+  filter(parameter != "b_Intercept") %>%
+  mutate(parameter = recode(parameter,
+    "b_swc_s"    = "SWC (linear)",
+    "b_Iswc_sE2" = "SWC² (curvature)",
+    "b_C_s"      = "Organic Carbon (%)",
+    "b_hand_s"   = "HAND (topo. position)"
+  ))
+
+ggplot(post_co2_C, aes(x = value, y = parameter, fill = after_stat(x > 0))) +
+  stat_halfeye(.width = c(0.66, 0.95), point_interval = median_hdi) +
+  geom_vline(xintercept = 0, linetype = "dashed", colour = "grey40") +
+  scale_fill_manual(values = c("#4575b4","#d73027"), guide = "none") +
+  labs(title    = "Model 2c — CO₂ Drivers with Organic Carbon",
+       subtitle = "Quadratic SWC retained; temperature replaced by soil C (%)",
+       x = "Effect on log(CO₂) (SD units)", y = NULL) +
+  theme_classic(base_size = 13)
+
+ggsave("Plots/Bayes_M2c_CO2_Carbon_coef.pdf", width = 8, height = 4)
+```
+
+```{r mod-co2-C-ce, fig.height=5, fig.width=10}
+# ── NEW (5c): conditional effects — SWC curve + carbon + HAND ────────────────
+ce_co2_C <- conditional_effects(mod_co2_C,
+                                 effects    = c("swc_s","C_s","hand_s"),
+                                 re_formula = NA)
+
+p_swc_c  <- plot(ce_co2_C, plot = FALSE)[[1]] +
+  labs(x = "SWC (std.)", y = "log(CO₂)", title = "SWC (quadratic)") +
+  theme_classic()
+p_C_c    <- plot(ce_co2_C, plot = FALSE)[[2]] +
+  labs(x = "Organic Carbon, C% (std.)", y = NULL, title = "Effect of C (%)") +
+  theme_classic()
+p_hand_c <- plot(ce_co2_C, plot = FALSE)[[3]] +
+  labs(x = "HAND (std.)", y = NULL, title = "Effect of HAND") +
+  theme_classic()
+
+p_swc_c + p_C_c + p_hand_c
+ggsave("Plots/Bayes_M2c_CO2_Carbon_CE.pdf", width = 10, height = 4)
+```
+
+---
+
+## 5d. Model 2d — CO₂ Gamma regression *(NEW)*
+
+> **Why Gamma regression?** The current models (M2, M2b, M2c) all apply a Gaussian
+> family to **log(fco2)** — which is mathematically a lognormal model. This works
+> but has two limitations: (1) predictions and coefficients live on the log scale,
+> requiring back-transformation for interpretation; (2) the Gaussian residual
+> variance is constant on the log scale, which may not match the data.
+>
+> **Gamma regression** with a log link is the natural exponential-family model for
+> **strictly positive, right-skewed continuous data**. It models the raw CO₂ flux
+> directly (no manual transformation), predicts on the original μmol m⁻² s⁻¹ scale,
+> and allows residual variance to grow with the mean (a realistic assumption for
+> flux data). This is exactly analogous to why we use Beta regression for a [0,1]
+> bounded variable — we are choosing the right distributional family for the data.
+>
+> **Formula:** `fco2 ~ swc + swc² + C + hand + (1|area) + (1|point2) + (1|month)`
+>
+> Structure mirrors M2c (quadratic SWC + organic carbon, no temperature);
+> Gamma family replaces the log-transform + Gaussian approach.
+
+```{r mod-co2-gamma, results="hide"}
+# ── NEW (5d): CO₂ Gamma regression with organic carbon, no temperature ──────────
+# Response: raw fco2 (µmol CO2 m⁻² s⁻¹), already filtered > 0 in df_an.
+# Log link means coefficients are multiplicative: exp(b) = fold change in CO₂.
+# drop_na(C_s): only observations with soil C data are used (same as M2c).
+prior_gamma <- c(
+  prior(normal(0, 1),   class = "b"),
+  prior(normal(4, 2),   class = "Intercept"),  # log(fco2) ≈ 2-6 → intercept near 4
+  prior(exponential(1), class = "sd"),
+  prior(exponential(1), class = "shape")        # Gamma shape (inverse-dispersion)
+)
+
+mod_co2_gamma_path <- "Data/mod_co2_gamma_C.rds"
+
+if (file.exists(mod_co2_gamma_path)) {
+  mod_co2_gamma <- readRDS(mod_co2_gamma_path)
+} else {
+  mod_co2_gamma <- brm(
+    fco2 ~ swc_s + I(swc_s^2) + C_s + hand_s +
+           (1 | area) + (1 | point2) + (1 | month),
+    data    = df_an %>% drop_na(C_s),
+    family  = Gamma(link = "log"),
+    prior   = prior_gamma,
+    iter    = 4000,
+    warmup  = 1000,
+    chains  = 4,
+    cores   = 4,
+    seed    = 42,
+    control = list(adapt_delta = 0.95)
+  )
+  saveRDS(mod_co2_gamma, mod_co2_gamma_path)
+}
+```
+
+```{r mod-co2-gamma-summary}
+# ── NEW (5d): summary ─────────────────────────────────────────────────────────
+# exp(b_swc_s)   = multiplicative change in CO₂ per SD increase in SWC
+# exp(b_C_s)     = multiplicative change in CO₂ per SD increase in organic C
+# exp(Intercept) = geometric mean CO₂ at average predictor values
+cat("n =", nrow(df_an %>% drop_na(C_s)), "observations with soil C data\n")
+summary(mod_co2_gamma)
+```
+
+```{r mod-co2-gamma-ppcheck, fig.height=4}
+# ── NEW (5d): pp_check — does Gamma capture the right-skewed CO₂ distribution? ─
+# Compare to M2c (log-Gaussian + C): if Gamma pp_check fits closer, prefer Gamma.
+pp_check(mod_co2_gamma, ndraws = 100) +
+  ggtitle("M2d — Posterior predictive check: Gamma regression for CO₂ (with organic C)") +
+  theme_classic()
+```
+
+```{r mod-co2-gamma-coef, fig.height=4, fig.width=8}
+# ── NEW (5d): posterior coefficient plot ──────────────────────────────────────
+# Coefficients are on the log(CO₂) scale (log link); exp() gives fold changes.
+post_co2_gamma <- as_draws_df(mod_co2_gamma) %>%
+  select(starts_with("b_")) %>%
+  pivot_longer(everything(), names_to = "parameter", values_to = "value") %>%
+  filter(parameter != "b_Intercept") %>%
+  mutate(parameter = recode(parameter,
+    "b_swc_s"    = "SWC (linear)",
+    "b_Iswc_sE2" = "SWC² (curvature)",
+    "b_C_s"      = "Organic Carbon (%)",
+    "b_hand_s"   = "HAND (topo. position)"
+  ))
+
+ggplot(post_co2_gamma, aes(x = value, y = parameter, fill = after_stat(x > 0))) +
+  stat_halfeye(.width = c(0.66, 0.95), point_interval = median_hdi) +
+  geom_vline(xintercept = 0, linetype = "dashed", colour = "grey40") +
+  scale_fill_manual(values = c("#4575b4","#d73027"), guide = "none") +
+  labs(title    = "Model 2d — CO₂ Gamma Regression with Organic Carbon",
+       subtitle = "Coefficients on log(CO₂) scale — exp(b) gives multiplicative effect",
+       x = "Effect on log(CO₂) — log link (SD units)", y = NULL) +
+  theme_classic(base_size = 13)
+
+ggsave("Plots/Bayes_M2d_CO2_Gamma_coef.pdf", width = 8, height = 4)
+```
+
+```{r mod-co2-gamma-ce, fig.height=5, fig.width=10}
+# ── NEW (5d): conditional effects — predictions on original CO₂ scale ─────────
+# conditional_effects() for Gamma back-transforms via exp() automatically,
+# so the y-axis is in µmol CO₂ m⁻² s⁻¹ — directly interpretable.
+ce_co2_gamma <- conditional_effects(mod_co2_gamma,
+                                     effects    = c("swc_s","C_s","hand_s"),
+                                     re_formula = NA)
+
+p_swc_g  <- plot(ce_co2_gamma, plot = FALSE)[[1]] +
+  labs(x = "SWC (std.)", y = "CO₂ (µmol m⁻² s⁻¹)", title = "SWC (quadratic)") +
+  theme_classic()
+p_C_g    <- plot(ce_co2_gamma, plot = FALSE)[[2]] +
+  labs(x = "Organic Carbon, C% (std.)", y = NULL, title = "Effect of C (%)") +
+  theme_classic()
+p_hand_g <- plot(ce_co2_gamma, plot = FALSE)[[3]] +
+  labs(x = "HAND (std.)", y = NULL, title = "Effect of HAND") +
+  theme_classic()
+
+p_swc_g + p_C_g + p_hand_g
+ggsave("Plots/Bayes_M2d_CO2_Gamma_CE.pdf", width = 10, height = 4)
+```
+
+> **Note on model comparison:** LOO-CV cannot directly compare M2c (Gaussian on
+> log-fco2) and M2d (Gamma on raw fco2) because they model different response
+> variables. Use the pp_check plots to judge which family better reproduces the
+> observed CO₂ distribution. If M2d's simulated densities track the observed
+> skewness more closely, prefer Gamma for inference and reporting.
+
+---
+
+## 6. Model 3 — CH₄ Flux Drivers
+
+```{r mod-ch4, results="hide"}
+mod_ch4_path <- "Data/mod_ch4.rds"
+
+if (file.exists(mod_ch4_path)) {
+  mod_ch4 <- readRDS(mod_ch4_path)
+} else {
+  mod_ch4 <- brm(
+    log_fch4 ~ swc_s + ts_s + hand_s + (1 | area) + (1 | point2) + (1 | month),
+    data    = df_an,
+    family  = gaussian(),
+    prior   = prior_flux,
+    iter    = 4000,
+    warmup  = 1000,
+    chains  = 4,
+    cores   = 4,
+    seed    = 42,
+    control = list(adapt_delta = 0.95)
+  )
+  saveRDS(mod_ch4, mod_ch4_path)
+}
+```
+
+```{r mod-ch4-summary}
+summary(mod_ch4)
+```
+
+```{r mod-ch4-plots, fig.height=6}
+post_ch4 <- as_draws_df(mod_ch4) %>%
+  select(starts_with("b_")) %>%
+  pivot_longer(everything(), names_to = "parameter", values_to = "value") %>%
+  filter(parameter != "b_Intercept") %>%
+  mutate(parameter = recode(parameter,
+    "b_swc_s"  = "Soil Moisture",
+    "b_ts_s"   = "Temperature",
+    "b_hand_s" = "HAND (topo. position)"
+  ))
+
+p_ch4_coef <- ggplot(post_ch4, aes(x = value, y = parameter, fill = after_stat(x > 0))) +
+  stat_halfeye(.width = c(0.66, 0.95), point_interval = median_hdi) +
+  geom_vline(xintercept = 0, linetype = "dashed", colour = "grey40") +
+  scale_fill_manual(values = c("#4575b4","#d73027"), guide = "none") +
+  labs(title    = "Model 3 — CH₄ Flux Drivers",
+       subtitle = "Posterior distributions of standardised coefficients",
+       x = "Effect on log(CH₄ + 5) (SD units)", y = NULL) +
+  theme_classic(base_size = 13)
+
+ce_ch4 <- conditional_effects(mod_ch4,
+                               effects    = c("swc_s","ts_s","hand_s"),
+                               re_formula = NA)
+
+p_swc3  <- plot(ce_ch4, plot = FALSE)[[1]] +
+  labs(x = "SWC (std.)", y = "log(CH₄+5)", title = "Effect of SWC") + theme_classic()
+p_ts3   <- plot(ce_ch4, plot = FALSE)[[2]] +
+  labs(x = "Temperature (std.)", y = NULL, title = "Effect of Temp.") + theme_classic()
+p_hand3 <- plot(ce_ch4, plot = FALSE)[[3]] +
+  labs(x = "HAND (std.)", y = NULL, title = "Effect of HAND") + theme_classic()
+
+p_ch4_coef / (p_swc3 + p_ts3 + p_hand3)
+ggsave("Plots/Bayes_M3_CH4_linear.pdf", width = 10, height = 8)
+```
+
+---
+
+## 6b. Non-linear CH₄ ~ SWC relationship *(NEW)*
+
+> **Motivation:** Unlike CO₂ (which peaks at intermediate moisture via aerobic
+> decomposition), CH₄ production is driven by **methanogenesis** — a strictly
+> anaerobic process. The expected pattern is therefore different:
+>
+> - At **low moisture** (aerobic soils): methanogenesis is suppressed, CH₄ ≈ 0 or even negative (net uptake).
+> - Above a **saturation threshold**: anaerobic pockets form and CH₄ rises, potentially steeply.
+> - At **very high moisture**: production may plateau or continue rising.
+>
+> This could look like a monotonic increase, a hockey-stick threshold, or a
+> positively-skewed curve — all quite different from the CO₂ inverted-U.
+> We first look at the raw data, then let a quadratic and a spline model
+> compete to capture whatever shape is actually there.
+
+### Raw data check — GAM smooth by area *(NEW)*
+
+```{r ch4-gam-check, fig.height=6, fig.width=10}
+# ── NEW: visualise the raw CH₄ ~ SWC shape before modelling ───────────────────
+# fch4 is already shifted by +5 to handle near-zero/negative values.
+# Note: unlike CO₂ we expect a positive, possibly accelerating, relationship.
+ggplot(df_an, aes(x = swc, y = log_fch4)) +
+  geom_point(alpha = 0.25, colour = "grey60", size = 1.5) +
+  geom_smooth(method = "gam", formula = y ~ s(x, k = 5),
+              colour = "#2166ac", fill = "#2166ac", alpha = 0.2, linewidth = 1) +
+  facet_wrap(~area, scales = "free_x",
+             labeller = as_labeller(c(vvt   = "Vale Verde",
+                                      bbt   = "Mulungu",
+                                      cr    = "Couros",
+                                      ing   = "Ingleses",
+                                      seteq = "Sete Quedas"))) +
+  labs(title    = "Raw log(CH₄ + 5) ~ SWC — GAM smooth per area",
+       subtitle = "Expected: monotonic increase or threshold effect above anaerobic transition",
+       x = "Soil Water Content (raw)", y = "log(CH₄ + 5)") +
+  theme_classic(base_size = 12) +
+  theme(strip.background = element_blank(),
+        strip.text = element_text(face = "bold"))
+
+ggsave("Plots/Bayes_CH4_GAM_check.pdf", width = 10, height = 6)
+```
+
+### Model 3b — quadratic CH₄ model *(NEW)*
+
+**Formula:** `log(fch4+5) ~ swc + swc² + ts + hand + (1|area) + (1|point2) + (1|month)`
+
+For CH₄ a quadratic can capture either a monotonic acceleration (positive linear +
+positive quadratic) or a plateau / slight optimum (positive linear + negative
+quadratic). The sign and magnitude of `swc²` will tell us which pattern fits.
+
+```{r mod-ch4-quad, results="hide"}
+# ── NEW: quadratic CH₄ model ───────────────────────────────────────────────────
+mod_ch4_quad_path <- "Data/mod_ch4_quad.rds"
+
+if (file.exists(mod_ch4_quad_path)) {
+  mod_ch4_quad <- readRDS(mod_ch4_quad_path)
+} else {
+  mod_ch4_quad <- brm(
+    log_fch4 ~ swc_s + I(swc_s^2) + ts_s + hand_s +
+               (1 | area) + (1 | point2) + (1 | month),
+    data    = df_an,
+    family  = gaussian(),
+    prior   = prior_flux,
+    iter    = 4000,
+    warmup  = 1000,
+    chains  = 4,
+    cores   = 4,
+    seed    = 42,
+    control = list(adapt_delta = 0.95)
+  )
+  saveRDS(mod_ch4_quad, mod_ch4_quad_path)
+}
+```
+
+### Model 3c — spline CH₄ model *(NEW)*
+
+**Formula:** `log(fch4+5) ~ s(swc_s) + ts + hand + (1|area) + (1|point2) + (1|month)`
+
+A thin-plate spline on SWC (via `brms` + `mgcv`) makes no assumption about the
+shape — it will find whatever functional form the data support. If it agrees with
+the quadratic, we have convergent evidence. If the spline looks very different,
+the relationship is more complex than a simple parabola.
+
+```{r mod-ch4-spline, results="hide"}
+# ── NEW: spline CH₄ model via brms (uses mgcv smooth) ─────────────────────────
+mod_ch4_spl_path <- "Data/mod_ch4_spline.rds"
+
+if (file.exists(mod_ch4_spl_path)) {
+  mod_ch4_spl <- readRDS(mod_ch4_spl_path)
+} else {
+  mod_ch4_spl <- brm(
+    log_fch4 ~ s(swc_s, k = 5) + ts_s + hand_s +
+               (1 | area) + (1 | point2) + (1 | month),
+    data    = df_an,
+    family  = gaussian(),
+    prior   = c(prior(normal(0, 1),   class = "b"),
+                prior(normal(0, 2),   class = "Intercept"),
+                prior(exponential(1), class = "sd"),
+                prior(exponential(1), class = "sigma"),
+                prior(exponential(1), class = "sds")),  # prior on spline wiggliness
+    iter    = 4000,
+    warmup  = 1000,
+    chains  = 4,
+    cores   = 4,
+    seed    = 42,
+    control = list(adapt_delta = 0.97)  # splines need slightly higher delta
+  )
+  saveRDS(mod_ch4_spl, mod_ch4_spl_path)
+}
+```
+
+### Posterior coefficient plots *(NEW)*
+
+```{r mod-ch4-quad-coef, fig.height=4, fig.width=8}
+# ── NEW: posteriors for the quadratic CH₄ model ────────────────────────────────
+post_ch4_quad <- as_draws_df(mod_ch4_quad) %>%
+  select(starts_with("b_")) %>%
+  pivot_longer(everything(), names_to = "parameter", values_to = "value") %>%
+  filter(parameter != "b_Intercept") %>%
+  mutate(parameter = recode(parameter,
+    "b_swc_s"    = "SWC (linear)",
+    "b_Iswc_sE2" = "SWC² (curvature)",
+    "b_ts_s"     = "Temperature",
+    "b_hand_s"   = "HAND (topo. position)"
+  ))
+
+ggplot(post_ch4_quad,
+       aes(x = value, y = parameter, fill = after_stat(x > 0))) +
+  stat_halfeye(.width = c(0.66, 0.95), point_interval = median_hdi) +
+  geom_vline(xintercept = 0, linetype = "dashed", colour = "grey40") +
+  scale_fill_manual(values = c("#4575b4","#d73027"), guide = "none") +
+  labs(title    = "Model 3b — CH₄ Quadratic Model",
+       subtitle = "SWC² sign: negative = inverted-U peak, positive = acceleration/plateau",
+       x = "Effect on log(CH₄ + 5) (SD units)", y = NULL) +
+  theme_classic(base_size = 13)
+
+ggsave("Plots/Bayes_M3b_CH4_quad_coef.pdf", width = 8, height = 4)
+```
+
+### Fitted curves — quadratic vs. spline overlay *(NEW)*
+
+```{r ch4-curves, fig.height=5, fig.width=9}
+# ── NEW: predict from both models and overlay for comparison ───────────────────
+swc_seq <- seq(-2.5, 2.5, length.out = 80)
+
+new_data_ch4 <- expand_grid(
+  swc_s  = swc_seq,
+  ts_s   = 0,
+  hand_s = 0,
+  area   = unique(df_an$area)[1],
+  point2 = unique(df_an$point2)[1],
+  month  = unique(df_an$month)[1]
+)
+
+# predictions from quadratic model
+pred_ch4_quad <- new_data_ch4 %>%
+  add_epred_draws(mod_ch4_quad, ndraws = 500, re_formula = NA) %>%
+  group_by(swc_s) %>%
+  summarise(med = median(.epred),
+            lo  = quantile(.epred, 0.10),
+            hi  = quantile(.epred, 0.90),
+            .groups = "drop") %>%
+  mutate(model = "Quadratic", swc_raw = swc_s * swc_sd + swc_mean)
+
+# predictions from spline model
+pred_ch4_spl <- new_data_ch4 %>%
+  add_epred_draws(mod_ch4_spl, ndraws = 500, re_formula = NA) %>%
+  group_by(swc_s) %>%
+  summarise(med = median(.epred),
+            lo  = quantile(.epred, 0.10),
+            hi  = quantile(.epred, 0.90),
+            .groups = "drop") %>%
+  mutate(model = "Spline", swc_raw = swc_s * swc_sd + swc_mean)
+
+pred_ch4_both <- bind_rows(pred_ch4_quad, pred_ch4_spl)
+
+ggplot(pred_ch4_both, aes(x = swc_raw, colour = model, fill = model)) +
+  # raw data in background
+  geom_point(data = df_an, aes(x = swc, y = log_fch4),
+             alpha = 0.18, colour = "grey60", size = 1.2, inherit.aes = FALSE) +
+  # credible ribbons
+  geom_ribbon(aes(ymin = lo, ymax = hi), alpha = 0.18, colour = NA) +
+  # fitted lines
+  geom_line(aes(y = med), linewidth = 1.3) +
+  scale_colour_manual(values = c("Quadratic" = "#2166ac", "Spline" = "#4dac26")) +
+  scale_fill_manual(  values = c("Quadratic" = "#2166ac", "Spline" = "#4dac26")) +
+  labs(title    = "CH₄ ~ SWC: quadratic vs. spline model",
+       subtitle = "80% credible ribbons — if curves agree, the shape is robust",
+       x        = "Soil Water Content (raw units)",
+       y        = "Predicted log(CH₄ + 5)",
+       colour   = "Model", fill = "Model") +
+  theme_classic(base_size = 13) +
+  theme(legend.position = c(0.15, 0.85))
+
+ggsave("Plots/Bayes_M3_CH4_curves_comparison.pdf", width = 9, height = 5)
+```
+
+### Model comparison: linear vs. quadratic vs. spline *(NEW)*
+
+```{r loo-ch4, warning=TRUE}
+# ── NEW: three-way LOO-CV comparison for CH₄ models ───────────────────────────
+# This tells us formally whether the non-linearity improves predictive accuracy.
+mod_ch4      <- add_criterion(mod_ch4,      "loo")
+mod_ch4_quad <- add_criterion(mod_ch4_quad, "loo")
+mod_ch4_spl  <- add_criterion(mod_ch4_spl,  "loo")
+
+cat("=== LOO-CV: CH₄ linear (M3) vs. quadratic (M3b) vs. spline (M3c) ===\n")
+print(loo_compare(mod_ch4, mod_ch4_quad, mod_ch4_spl))
+cat("\nRow 1 = best model. |elpd_diff| > 2 × se_diff = substantial improvement.\n")
+cat("If spline wins but quadratic is close, the curve is smooth (quadratic is fine).\n")
+cat("If spline wins by a large margin, the shape is complex (use spline for inference).\n")
+```
+
+### Update synthesis: use best CH₄ model in causal chain *(NEW)*
+
+```{r ch4-best-curve, fig.height=5, fig.width=8}
+# ── NEW: pick the winner from LOO and regenerate the SWC → CH₄ panel ──────────
+# Replace 'mod_ch4_spl' below with 'mod_ch4_quad' if quadratic wins LOO.
+# Default here uses the spline (most flexible); change as needed after inspection.
+
+pred_ch4_best <- new_data_ch4 %>%
+  add_epred_draws(mod_ch4_spl, ndraws = 500, re_formula = NA) %>%
+  group_by(swc_s) %>%
+  summarise(med = median(.epred),
+            lo  = quantile(.epred, 0.10),
+            hi  = quantile(.epred, 0.90),
+            .groups = "drop") %>%
+  mutate(swc_raw = swc_s * swc_sd + swc_mean)
+
+ggplot(pred_ch4_best, aes(x = swc_raw)) +
+  geom_point(data = df_an, aes(x = swc, y = log_fch4),
+             alpha = 0.18, colour = "grey60", size = 1.2, inherit.aes = FALSE) +
+  geom_ribbon(aes(ymin = lo, ymax = hi), alpha = 0.22, fill = "#2166ac") +
+  geom_line(aes(y = med), colour = "#2166ac", linewidth = 1.4) +
+  labs(title    = "Best-fitting CH₄ ~ SWC model (spline)",
+       subtitle = "80% credible ribbon — random effects marginalised",
+       x        = "Soil Water Content (raw units)",
+       y        = "Predicted log(CH₄ + 5)") +
+  theme_classic(base_size = 13)
+
+ggsave("Plots/Bayes_M3_CH4_best_curve.pdf", width = 8, height = 5)
+```
+
+---
+
+## 6c. Model 3d — CH₄ with organic carbon predictor *(NEW)*
+
+> **Motivation:** Organic carbon is the primary substrate for **methanogenesis** —
+> the strictly anaerobic pathway that produces CH₄. High C% soils can sustain
+> higher CH₄ production rates independently of current temperature, because the
+> substrate pool is already in place. Replacing temperature with C% therefore
+> targets a more mechanistically direct driver of CH₄ emission.
+>
+> **Formula:** `log(fch4+5) ~ swc_s + C + hand + (1|area) + (1|point2) + (1|month)`
+>
+> Linear SWC term — simpler and more interpretable than a spline here, where the
+> main question is whether organic carbon explains CH₄ variation beyond the
+> hydro-topographic gradient.
+
+```{r mod-ch4-C, results="hide"}
+# ── NEW (6c): CH₄ linear model with organic carbon replacing temperature ─────────
+mod_ch4_C_path <- "Data/mod_ch4_C_linear.rds"
+
+if (file.exists(mod_ch4_C_path)) {
+  mod_ch4_C <- readRDS(mod_ch4_C_path)
+} else {
+  mod_ch4_C <- brm(
+    log_fch4 ~ swc_s + C_s + hand_s +
+               (1 | area) + (1 | point2) + (1 | month),
+    data    = df_an %>% drop_na(C_s),
+    family  = gaussian(),
+    prior   = c(prior(normal(0, 1),   class = "b"),
+                prior(normal(0, 2),   class = "Intercept"),
+                prior(exponential(1), class = "sd"),
+                prior(exponential(1), class = "sigma")),
+    iter    = 4000,
+    warmup  = 1000,
+    chains  = 4,
+    cores   = 4,
+    seed    = 42,
+    control = list(adapt_delta = 0.95)
+  )
+  saveRDS(mod_ch4_C, mod_ch4_C_path)
+}
+```
+
+```{r mod-ch4-C-summary}
+# ── NEW (6c): summary ─────────────────────────────────────────────────────────
+cat("n =", nrow(df_an %>% drop_na(C_s)), "observations with soil C data\n")
+summary(mod_ch4_C)
+```
+
+```{r mod-ch4-C-coef, fig.height=4, fig.width=8}
+# ── NEW (6c): posterior coefficient plot ──────────────────────────────────────
+# swc_s is now a parametric term so it appears in b_ draws alongside C_s & HAND.
+post_ch4_C <- as_draws_df(mod_ch4_C) %>%
+  select(starts_with("b_")) %>%
+  pivot_longer(everything(), names_to = "parameter", values_to = "value") %>%
+  filter(parameter != "b_Intercept") %>%
+  mutate(parameter = recode(parameter,
+    "b_swc_s"  = "Soil Moisture (SWC)",
+    "b_C_s"    = "Organic Carbon (%)",
+    "b_hand_s" = "HAND (topo. position)"
+  ))
+
+ggplot(post_ch4_C, aes(x = value, y = parameter, fill = after_stat(x > 0))) +
+  stat_halfeye(.width = c(0.66, 0.95), point_interval = median_hdi) +
+  geom_vline(xintercept = 0, linetype = "dashed", colour = "grey40") +
+  scale_fill_manual(values = c("#4575b4","#d73027"), guide = "none") +
+  labs(title    = "Model 3d — CH₄ Drivers with Organic Carbon",
+       subtitle = "Standardised coefficients — temperature replaced by soil C (%)",
+       x = "Effect on log(CH₄ + 5) (SD units)", y = NULL) +
+  theme_classic(base_size = 13)
+
+ggsave("Plots/Bayes_M3d_CH4_Carbon_coef.pdf", width = 8, height = 4)
+```
+
+```{r mod-ch4-C-ce, fig.height=5, fig.width=10}
+# ── NEW (6c): conditional effects — linear SWC + carbon + HAND ────────────────
+ce_ch4_C <- conditional_effects(mod_ch4_C,
+                                 effects    = c("swc_s","C_s","hand_s"),
+                                 re_formula = NA)
+
+p_swc_ch4_c  <- plot(ce_ch4_C, plot = FALSE)[[1]] +
+  labs(x = "SWC (std.)", y = "log(CH₄+5)", title = "SWC (linear)") +
+  theme_classic()
+p_C_ch4_c    <- plot(ce_ch4_C, plot = FALSE)[[2]] +
+  labs(x = "Organic Carbon, C% (std.)", y = NULL, title = "Effect of C (%)") +
+  theme_classic()
+p_hand_ch4_c <- plot(ce_ch4_C, plot = FALSE)[[3]] +
+  labs(x = "HAND (std.)", y = NULL, title = "Effect of HAND") +
+  theme_classic()
+
+p_swc_ch4_c + p_C_ch4_c + p_hand_ch4_c
+ggsave("Plots/Bayes_M3d_CH4_Carbon_CE.pdf", width = 10, height = 4)
+```
+
+---
+
+## 6d. Model 3e — CH₄ Gamma regression *(NEW)*
+
+> **Why Gamma regression for CH₄?** Same motivation as section 5d for CO₂. The
+> current models apply Gaussian family to **log(fch4 + 5)**, which works but hides
+> predictions behind a log scale and assumes constant variance on that scale.
+>
+> CH₄ presents an extra complication: raw fluxes can be negative (net CH₄ uptake
+> by the soil), so a strict positivity requirement must be satisfied before fitting
+> Gamma. We use `fch4_pos = fch4 + 5` (already added to df_an), which shifts all
+> values into positive territory. We additionally verify no values remain ≤ 0.
+>
+> **Formula:** `fch4_pos ~ swc_s + ts + hand + (1|area) + (1|point2) + (1|month)`
+>
+> Linear SWC term; Gamma with log link replaces Gaussian on the log-transformed
+> response. All coefficients are on the log scale — exp(b) gives fold changes in
+> CH₄ + 5.
+
+```{r mod-ch4-gamma, results="hide", cache=FALSE}
+# ── NEW (6d): CH₄ Gamma regression with linear SWC ────────────────────────────
+# Verify all fch4_pos values are strictly positive before fitting
+stopifnot(all(df_an$fch4_pos > 0, na.rm = TRUE))
+
+mod_ch4_gamma_path <- "Data/mod_ch4_gamma_linear.rds"
+
+if (file.exists(mod_ch4_gamma_path)) {
+  mod_ch4_gamma <- readRDS(mod_ch4_gamma_path)
+} else {
+  mod_ch4_gamma <- brm(
+    fch4_pos ~ swc_s + ts_s + hand_s +
+               (1 | area) + (1 | point2) + (1 | month),
+    data    = df_an,
+    family  = Gamma(link = "log"),
+    prior   = c(prior(normal(0, 1),   class = "b"),
+                prior(normal(2, 2),   class = "Intercept"),  # log(fch4+5) ≈ 1-3
+                prior(exponential(1), class = "sd"),
+                prior(exponential(1), class = "shape")),
+    iter    = 4000,
+    warmup  = 1000,
+    chains  = 4,
+    cores   = 4,
+    seed    = 42,
+    control = list(adapt_delta = 0.95)
+  )
+  saveRDS(mod_ch4_gamma, mod_ch4_gamma_path)
+}
+```
+
+```{r mod-ch4-gamma-summary, cache=FALSE}
+# ── NEW (6d): summary ─────────────────────────────────────────────────────────
+summary(mod_ch4_gamma)
+```
+
+```{r mod-ch4-gamma-ppcheck, fig.height=4}
+# ── NEW (6d): pp_check — compare to log-Gaussian (M3c) visually ──────────────
+# If Gamma simulated draws track the observed right-skewed CH₄ distribution
+# more closely than the log-Gaussian, it is the better-calibrated model.
+pp_check(mod_ch4_gamma, ndraws = 100) +
+  ggtitle("M3e — Posterior predictive check: Gamma regression for CH₄ + 5") +
+  theme_classic()
+```
+
+```{r mod-ch4-gamma-coef, fig.height=4, fig.width=8}
+# ── NEW (6d): posterior coefficient plot ──────────────────────────────────────
+# swc_s is now parametric so it appears alongside ts_s and hand_s in b_ draws.
+post_ch4_gamma <- as_draws_df(mod_ch4_gamma) %>%
+  select(starts_with("b_")) %>%
+  pivot_longer(everything(), names_to = "parameter", values_to = "value") %>%
+  filter(parameter != "b_Intercept") %>%
+  mutate(parameter = recode(parameter,
+    "b_swc_s"  = "Soil Moisture (SWC)",
+    "b_ts_s"   = "Temperature",
+    "b_hand_s" = "HAND (topo. position)"
+  ))
+
+ggplot(post_ch4_gamma, aes(x = value, y = parameter, fill = after_stat(x > 0))) +
+  stat_halfeye(.width = c(0.66, 0.95), point_interval = median_hdi) +
+  geom_vline(xintercept = 0, linetype = "dashed", colour = "grey40") +
+  scale_fill_manual(values = c("#4575b4","#d73027"), guide = "none") +
+  labs(title    = "Model 3e — CH₄ Gamma Regression",
+       subtitle = "Coefficients on log(CH₄+5) scale — exp(b) gives multiplicative effect",
+       x = "Effect on log(CH₄ + 5) — log link (SD units)", y = NULL) +
+  theme_classic(base_size = 13)
+
+ggsave("Plots/Bayes_M3e_CH4_Gamma_coef.pdf", width = 8, height = 4)
+```
+
+```{r mod-ch4-gamma-ce, fig.height=5, fig.width=10}
+# ── NEW (6d): conditional effects on the original (CH₄ + 5) scale ─────────────
+# Subtract 5 from y-axis labels mentally to read as true CH₄ flux.
+ce_ch4_gamma <- conditional_effects(mod_ch4_gamma,
+                                     effects    = c("swc_s","ts_s","hand_s"),
+                                     re_formula = NA)
+
+p_swc_ge  <- plot(ce_ch4_gamma, plot = FALSE)[[1]] +
+  labs(x = "SWC (std.)", y = "CH₄ + 5 (nmol m⁻² s⁻¹)", title = "SWC (linear)") +
+  theme_classic()
+p_ts_ge   <- plot(ce_ch4_gamma, plot = FALSE)[[2]] +
+  labs(x = "Temperature (std.)", y = NULL, title = "Effect of Temp.") +
+  theme_classic()
+p_hand_ge <- plot(ce_ch4_gamma, plot = FALSE)[[3]] +
+  labs(x = "HAND (std.)", y = NULL, title = "Effect of HAND") +
+  theme_classic()
+
+p_swc_ge + p_ts_ge + p_hand_ge
+ggsave("Plots/Bayes_M3e_CH4_Gamma_CE.pdf", width = 10, height = 4)
+```
+
+> **Note on model comparison:** As with CO₂, LOO-CV cannot compare M3c (Gaussian
+> on log-transformed response) directly with M3e (Gamma on raw shifted response)
+> because the response variables differ. Judge fit using pp_check. If M3e's
+> simulated distributions better replicate the heavy right tail of CH₄ + 5,
+> prefer Gamma for final reporting.
+
+---
+
+## 6e. Model 3f — Hurdle Gamma for CH₄ *(NEW)*
+
+### Why a hurdle model?
+
+The pp_check of M3e (Gamma regression) revealed a fundamental mismatch: the
+observed CH₄ + 5 distribution has a **sharp spike at x = 5** (i.e. raw fch₄ ≈ 0)
+followed by a long right tail, while the Gamma posterior predictive draws produce
+a smooth unimodal curve that cannot reproduce the spike at all.
+
+This pattern is not a modelling artefact — it reflects a genuine **two-state
+biological process** in seasonal wetlands:
+
+**State 1 — aerobic / non-emitting (the spike).**
+When soils are dry (typically dry-season campaigns: set24, jun25, set25) there
+is sufficient oxygen in the pore space to suppress methanogenesis completely.
+CH₄ flux measurements at these points are zero or slightly negative (net uptake
+by methanotrophic bacteria oxidising atmospheric CH₄). These observations carry
+no information about methanogenesis — they are structurally zero.
+
+**State 2 — anaerobic / emitting (the tail).**
+When soils are saturated (wet-season campaigns: nov24, fev25, dez25) oxygen is
+excluded, anaerobic microsites proliferate, and methanogens become active. CH₄
+flux is now a genuinely positive, right-skewed quantity driven by substrate
+availability (organic carbon), temperature, and the depth of the water table
+(indexed by HAND).
+
+A single Gamma (or lognormal) distribution tries to fit both states with one
+curve — an impossible task when one state is a point mass at zero and the other
+is a continuous right-skewed distribution. The `+5` offset made this worse by
+physically shifting the zero-mass to x = 5, which is why the Gamma spike
+appeared there rather than at zero.
+
+### The hurdle Gamma solution
+
+A **hurdle model** (also called a two-part model) handles this by splitting the
+likelihood into two explicitly separate components:
+
+1. **Hurdle component** — a logistic regression for the binary outcome
+   *"does this observation belong to the zero (aerobic) state?"*
+   Predictors: SWC and HAND are the primary drivers of whether a soil is
+   aerobic or anaerobic; month captures remaining seasonal structure.
+
+2. **Positive component** — a Gamma regression (log link) fitted **only to the
+   non-zero observations**, modelling how much CH₄ is emitted once the anaerobic
+   threshold is crossed. Predictors: SWC, temperature, HAND, and the full
+   hierarchical random effects.
+
+The two sub-models are estimated jointly in a single MCMC run, so uncertainty
+propagates correctly between them.
+
+> **Variable used:** `fch4_hurdle = if_else(fch4 ≤ 0, 0, fch4)` — raw CH₄ flux
+> with all non-positive values set to exactly 0. This directly encodes the
+> ecological interpretation: fch4 ≤ 0 means "no net CH₄ emission" (aerobic or
+> uptake state); fch4 > 0 means "active methanogenesis". No arbitrary offset
+> needed — the hurdle handles the zeros natively.
+
+**Formula:**
+
+```
+fch4_hurdle ~ swc_s + ts_s + hand_s + (1|area) + (1|point2) + (1|month)   # positive part
+hu           ~ swc_s + hand_s + (1|area) + (1|month)                       # P(zero state)
+```
+
+`hu` is the probability of being in the **zero (aerobic) state** on the logit
+scale. A **negative** coefficient on `swc_s` for `hu` means higher soil moisture
+→ lower probability of zero → more likely to emit CH₄, which is the ecologically
+expected direction.
+
+```{r mod-ch4-hurdle, results="hide"}
+# ── NEW (6e): Hurdle Gamma model for CH₄ ──────────────────────────────────────
+# fch4_hurdle = 0  → aerobic / non-emitting state  (modelled by 'hu' logistic)
+# fch4_hurdle > 0  → active methanogenesis          (modelled by Gamma log-link)
+#
+# The two sub-models share the same MCMC run; priors are specified per sub-model
+# using the dpar argument.
+
+prior_hurdle <- c(
+  # ── positive (Gamma) component ────────────────────────────────────────────
+  prior(normal(0, 1),   class = "b"),
+  prior(normal(1, 2),   class = "Intercept"),    # log(fch4) for positive obs
+  prior(exponential(1), class = "sd"),
+  prior(exponential(1), class = "shape"),
+  # ── hurdle (logistic) component — use dpar = "hu" ─────────────────────────
+  prior(normal(0, 1),   class = "b",         dpar = "hu"),
+  prior(normal(0, 1.5), class = "Intercept", dpar = "hu"),  # logit scale
+  prior(exponential(1), class = "sd",        dpar = "hu")
+)
+
+mod_ch4_hurdle_path <- "Data/mod_ch4_hurdle.rds"
+
+if (file.exists(mod_ch4_hurdle_path)) {
+  mod_ch4_hurdle <- readRDS(mod_ch4_hurdle_path)
+} else {
+  mod_ch4_hurdle <- brm(
+    bf(
+      # positive component: how much CH₄ when emitting?
+      fch4_hurdle ~ swc_s + ts_s + hand_s +
+                    (1 | area) + (1 | point2) + (1 | month),
+      # hurdle component: P(zero / aerobic state)
+      hu          ~ swc_s + hand_s + (1 | area) + (1 | month)
+    ),
+    data    = df_an,
+    family  = hurdle_gamma(link = "log", link_hu = "logit"),
+    prior   = prior_hurdle,
+    iter    = 4000,
+    warmup  = 1000,
+    chains  = 4,
+    cores   = 4,
+    seed    = 42,
+    control = list(adapt_delta = 0.97)   # hurdle models can have higher curvature
+  )
+  saveRDS(mod_ch4_hurdle, mod_ch4_hurdle_path)
+}
+```
+
+```{r mod-ch4-hurdle-summary}
+# ── NEW (6e): summary ─────────────────────────────────────────────────────────
+# Two blocks appear:
+#   Regression Coefficients            → positive (Gamma) component, log scale
+#   Regression Coefficients (hu)       → hurdle (logistic) component, logit scale
+# A negative hu coefficient on swc_s means more moisture = less likely zero = more CH₄
+summary(mod_ch4_hurdle)
+```
+
+```{r mod-ch4-hurdle-ppcheck, fig.height=4}
+# ── NEW (6e): pp_check — should now capture the spike + tail structure ─────────
+# If successful, the green draws will show the spike near zero AND the right tail.
+pp_check(mod_ch4_hurdle, ndraws = 100) +
+  ggtitle("M3f — Posterior predictive check: Hurdle Gamma for CH₄") +
+  theme_classic()
+```
+
+```{r mod-ch4-hurdle-coef, fig.height=5, fig.width=9}
+# ── NEW (6e): coefficient plots — one panel per sub-model ─────────────────────
+
+# ── Positive (Gamma) component: how much CH₄ when emitting? ──────────────────
+post_hurdle_pos <- as_draws_df(mod_ch4_hurdle) %>%
+  select(starts_with("b_") & !starts_with("b_hu_")) %>%
+  pivot_longer(everything(), names_to = "parameter", values_to = "value") %>%
+  filter(parameter != "b_Intercept") %>%
+  mutate(parameter = recode(parameter,
+    "b_swc_s"  = "Soil Moisture (SWC)",
+    "b_ts_s"   = "Temperature",
+    "b_hand_s" = "HAND (topo. position)"
+  ))
+
+p_pos <- ggplot(post_hurdle_pos,
+                aes(x = value, y = parameter, fill = after_stat(x > 0))) +
+  stat_halfeye(.width = c(0.66, 0.95), point_interval = median_hdi) +
+  geom_vline(xintercept = 0, linetype = "dashed", colour = "grey40") +
+  scale_fill_manual(values = c("#4575b4","#d73027"), guide = "none") +
+  labs(title    = "Positive component (Gamma)",
+       subtitle = "When emitting: what drives CH₄ magnitude? (log scale)",
+       x = "Effect on log(CH₄) — log link", y = NULL) +
+  theme_classic(base_size = 12)
+
+# ── Hurdle (logistic) component: what drives the zero state? ─────────────────
+# Negative coefficient = predictor REDUCES probability of being zero
+# i.e., promotes active CH₄ emission
+post_hurdle_hu <- as_draws_df(mod_ch4_hurdle) %>%
+  select(starts_with("b_hu_")) %>%
+  pivot_longer(everything(), names_to = "parameter", values_to = "value") %>%
+  filter(parameter != "b_hu_Intercept") %>%
+  mutate(parameter = recode(parameter,
+    "b_hu_swc_s"  = "Soil Moisture (SWC)",
+    "b_hu_hand_s" = "HAND (topo. position)"
+  ))
+
+p_hu <- ggplot(post_hurdle_hu,
+               aes(x = value, y = parameter, fill = after_stat(x > 0))) +
+  stat_halfeye(.width = c(0.66, 0.95), point_interval = median_hdi) +
+  geom_vline(xintercept = 0, linetype = "dashed", colour = "grey40") +
+  scale_fill_manual(values = c("#4575b4","#d73027"), guide = "none") +
+  labs(title    = "Hurdle component (logistic)",
+       subtitle = "What drives P(zero / aerobic state)? Negative = promotes emission",
+       x = "Effect on logit P(zero state)", y = NULL) +
+  theme_classic(base_size = 12)
+
+p_pos + p_hu +
+  plot_annotation(
+    title    = "Model 3f — Hurdle Gamma: two-part CH₄ model",
+    subtitle = "Left: magnitude of emission | Right: probability of non-emitting state"
+  )
+
+ggsave("Plots/Bayes_M3f_CH4_Hurdle_coef.pdf", width = 9, height = 5)
+```
+
+```{r mod-ch4-hurdle-ce, fig.height=6, fig.width=10}
+# ── NEW (6e): conditional effects — both components ───────────────────────────
+# conditional_effects() for hurdle models returns predictions for the full
+# response (integrating over both components) by default, which is the most
+# interpretable quantity: E[CH₄] = P(emitting) × E[CH₄ | emitting].
+
+ce_hurdle <- conditional_effects(mod_ch4_hurdle,
+                                  effects    = c("swc_s","ts_s","hand_s"),
+                                  re_formula = NA)
+
+p_swc_h  <- plot(ce_hurdle, plot = FALSE)[[1]] +
+  labs(x = "SWC (std.)", y = "Expected CH₄ flux",
+       title = "SWC → CH₄ (marginal)") + theme_classic()
+p_ts_h   <- plot(ce_hurdle, plot = FALSE)[[2]] +
+  labs(x = "Temperature (std.)", y = NULL,
+       title = "Temp. → CH₄ (marginal)") + theme_classic()
+p_hand_h <- plot(ce_hurdle, plot = FALSE)[[3]] +
+  labs(x = "HAND (std.)", y = NULL,
+       title = "HAND → CH₄ (marginal)") + theme_classic()
+
+p_swc_h + p_ts_h + p_hand_h +
+  plot_annotation(
+    subtitle = paste("Marginal effect = P(emitting) × E[CH₄ | emitting].",
+                     "Incorporates both sub-models simultaneously.")
+  )
+
+ggsave("Plots/Bayes_M3f_CH4_Hurdle_CE.pdf", width = 10, height = 4)
+```
+
+> **How to read the results:**
+>
+> - **Hurdle component (hu):** A strongly negative `swc_s` coefficient means that
+>   as soil moisture rises, the probability of being in the aerobic/zero state
+>   drops sharply — the anaerobic threshold is crossed. Similarly, a negative
+>   `hand_s` coefficient means lower topographic positions (wetter) are much less
+>   likely to be in the zero state.
+>
+> - **Positive component (Gamma):** Among the observations that *do* emit CH₄,
+>   what drives how much they emit? Temperature may matter more here (warmer =
+>   faster microbial metabolism), while SWC may have a weaker effect once the
+>   anaerobic state is already established.
+>
+> - **Marginal conditional effects:** These integrate both components and answer
+>   the ecologically most relevant question: *"What is the expected CH₄ flux at
+>   this site, averaging over the probability that it is in the emitting state?"*
+>   This is the quantity most directly comparable to field flux measurements.
+
+---
+
+## 7. Model 4 — Carbon Content Drivers
+
+**Question:** Is soil carbon content predicted by the same hydro-topographic gradient that drives fluxes?
+
+**Formula:** `C ~ swc + ts + hand + (1|area)`
+
+```{r mod-C, results="hide"}
+prior_C <- c(
+  prior(normal(0, 1),   class = "b"),
+  prior(normal(0, 2),   class = "Intercept"),
+  prior(exponential(1), class = "sd"),
+  prior(exponential(1), class = "sigma")
+)
+
+mod_C_path <- "Data/mod_C.rds"
+
+if (file.exists(mod_C_path)) {
+  mod_C <- readRDS(mod_C_path)
+} else {
+  mod_C <- brm(
+    C_s ~ swc_s + ts_s + hand_s + (1 | area),
+    data    = df_an %>% drop_na(C),
+    family  = gaussian(),
+    prior   = prior_C,
+    iter    = 4000,
+    warmup  = 1000,
+    chains  = 4,
+    cores   = 4,
+    seed    = 42,
+    control = list(adapt_delta = 0.95)
+  )
+  saveRDS(mod_C, mod_C_path)
+}
+```
+
+```{r mod-C-summary}
+summary(mod_C)
+```
+
+```{r mod-C-plots, fig.height=6}
+post_C <- as_draws_df(mod_C) %>%
+  select(starts_with("b_")) %>%
+  pivot_longer(everything(), names_to = "parameter", values_to = "value") %>%
+  filter(parameter != "b_Intercept") %>%
+  mutate(parameter = recode(parameter,
+    "b_swc_s"  = "Soil Moisture",
+    "b_ts_s"   = "Temperature",
+    "b_hand_s" = "HAND (topo. position)"
+  ))
+
+p_C_coef <- ggplot(post_C, aes(x = value, y = parameter, fill = after_stat(x > 0))) +
+  stat_halfeye(.width = c(0.66, 0.95), point_interval = median_hdi) +
+  geom_vline(xintercept = 0, linetype = "dashed", colour = "grey40") +
+  scale_fill_manual(values = c("#4575b4","#d73027"), guide = "none") +
+  labs(title    = "Model 4 — Carbon Content Drivers",
+       subtitle = "Posterior distributions of standardised coefficients",
+       x = "Effect on C content (SD units)", y = NULL) +
+  theme_classic(base_size = 13)
+
+ce_C <- conditional_effects(mod_C,
+                             effects    = c("swc_s","ts_s","hand_s"),
+                             re_formula = NA)
+
+p_swc4  <- plot(ce_C, plot = FALSE)[[1]] +
+  labs(x = "SWC (std.)", y = "C content (std.)", title = "Effect of SWC") + theme_classic()
+p_ts4   <- plot(ce_C, plot = FALSE)[[2]] +
+  labs(x = "Temperature (std.)", y = NULL, title = "Effect of Temp.") + theme_classic()
+p_hand4 <- plot(ce_C, plot = FALSE)[[3]] +
+  labs(x = "HAND (std.)", y = NULL, title = "Effect of HAND") + theme_classic()
+
+p_C_coef / (p_swc4 + p_ts4 + p_hand4)
+ggsave("Plots/Bayes_M4_Carbon.pdf", width = 10, height = 8)
+```
+
+---
+
+## 8. Synthesis Plots
+
+### 8a. Unified coefficient comparison — best models
+
+> Models shown: M1 (Gaussian SWC drivers), M2c (CO₂ quadratic + organic carbon),
+> M3f positive component (CH₄ hurdle Gamma — magnitude of emission when active),
+> M4 (carbon content drivers). All predictors are standardised so coefficients
+> are directly comparable within and across panels.
+
+```{r synthesis-coef, fig.height=5, fig.width=13}
+# ── post_hurdle_pos was created in section 6e; represents the Gamma sub-model
+# (what drives how much CH₄ is emitted, given the site is in the emitting state)
+bind_rows(
+  post_swc         %>% mutate(response = "Soil Moisture\n(M1 — Gaussian)"),
+  post_co2_C       %>% mutate(response = "CO₂ flux\n(M2c — quadratic + C)"),
+  post_hurdle_pos  %>% mutate(response = "CH₄ flux — emitting state\n(M3f — hurdle Gamma)"),
+  post_C           %>% mutate(response = "Carbon content\n(M4 — Gaussian)")
+) %>%
+  mutate(response = factor(response,
+           levels = c("Soil Moisture\n(M1 — Gaussian)",
+                      "CO₂ flux\n(M2c — quadratic + C)",
+                      "CH₄ flux — emitting state\n(M3f — hurdle Gamma)",
+                      "Carbon content\n(M4 — Gaussian)"))) %>%
+  ggplot(aes(x = value, y = parameter, fill = after_stat(x > 0))) +
+  stat_halfeye(.width = c(0.66, 0.95), point_interval = median_hdi,
+               alpha = 0.8, slab_alpha = 0.6) +
+  geom_vline(xintercept = 0, linetype = "dashed", colour = "grey40") +
+  scale_fill_manual(values = c("#4575b4","#d73027"), guide = "none") +
+  facet_wrap(~response, nrow = 1, scales = "free_y") +
+  labs(title    = "Standardised effect sizes — best Bayesian models",
+       subtitle = "Inner band = 66% CI, outer band = 95% CI. Blue = negative, red = positive effect.",
+       x = "Standardised coefficient", y = NULL) +
+  theme_classic(base_size = 12) +
+  theme(strip.background = element_blank(),
+        strip.text = element_text(face = "bold", size = 10))
+
+ggsave("Plots/Bayes_Synthesis_Coefficients.pdf", width = 13, height = 5)
+```
+
+### 8b. The causal chain: topography → moisture → fluxes
+
+> CO₂ curve: M2c (quadratic SWC + organic carbon, C held at mean).
+> CH₄ curve: M3f hurdle Gamma — marginal prediction integrating P(emitting) × E[CH₄ | emitting],
+> which is the quantity directly comparable to field flux measurements.
+
+```{r synthesis-gradient, fig.height=8, fig.width=10}
+# ── SWC along HAND gradient by area (M1 Gaussian) ─────────────────────────────
+hand_seq <- seq(-2, 2, length.out = 60)
+
+pred_swc_area <- expand_grid(
+  hand_s = hand_seq,
+  ts_s   = 0,
+  prec_s = 0,
+  area   = unique(df_an$area)
+) %>%
+  add_epred_draws(mod_swc, ndraws = 500, re_formula = ~(1|area)) %>%
+  group_by(hand_s, area) %>%
+  summarise(swc_med = median(.epred),
+            swc_lo  = quantile(.epred, 0.1),
+            swc_hi  = quantile(.epred, 0.9),
+            .groups = "drop") %>%
+  mutate(area = recode(as.character(area),
+    vvt="Vale Verde", bbt="Mulungu", cr="Couros",
+    ing="Ingleses",   seteq="Sete Quedas"))
+
+swc_seq <- seq(-2, 2, length.out = 60)
+
+# ── CO₂ ~ SWC: M2c (quadratic + organic carbon, C held at mean = 0) ───────────
+pred_co2_swc <- expand_grid(
+  swc_s  = swc_seq,
+  C_s    = 0,       # organic carbon held at its mean
+  hand_s = 0,
+  area   = unique(df_an$area)[1],
+  point2 = unique(df_an$point2)[1],
+  month  = unique(df_an$month)[1]
+) %>%
+  add_epred_draws(mod_co2_C, ndraws = 500, re_formula = NA) %>%
+  group_by(swc_s) %>%
+  summarise(co2_med = median(.epred),
+            co2_lo  = quantile(.epred, 0.1),
+            co2_hi  = quantile(.epred, 0.9),
+            .groups = "drop") %>%
+  mutate(swc_raw = swc_s * swc_sd + swc_mean)
+
+# ── CH₄ ~ SWC: M3f hurdle Gamma — marginal expected CH₄ flux ─────────────────
+# add_epred_draws for hurdle_gamma returns E[y] = P(non-zero) × E[y | non-zero],
+# the ecologically most meaningful quantity.
+pred_ch4_swc <- expand_grid(
+  swc_s  = swc_seq,
+  ts_s   = 0,
+  hand_s = 0,
+  area   = unique(df_an$area)[1],
+  point2 = unique(df_an$point2)[1],
+  month  = unique(df_an$month)[1]
+) %>%
+  add_epred_draws(mod_ch4_hurdle, ndraws = 500, re_formula = NA) %>%
+  group_by(swc_s) %>%
+  summarise(ch4_med = median(.epred),
+            ch4_lo  = quantile(.epred, 0.1),
+            ch4_hi  = quantile(.epred, 0.9),
+            .groups = "drop") %>%
+  mutate(swc_raw = swc_s * swc_sd + swc_mean)
+
+# ── recalculate CO₂ SWC optimum from M2c peak draws ──────────────────────────
+peak_draws_C <- as_draws_df(mod_co2_C) %>%
+  mutate(
+    peak_scaled = -b_swc_s / (2 * b_Iswc_sE2),
+    peak_raw    = peak_scaled * swc_sd + swc_mean
+  )
+
+g1 <- ggplot(pred_swc_area,
+             aes(x = hand_s, y = swc_med, colour = area, fill = area)) +
+  geom_ribbon(aes(ymin = swc_lo, ymax = swc_hi), alpha = 0.15, colour = NA) +
+  geom_line(linewidth = 1) +
+  scale_colour_viridis_d(end = 0.9) + scale_fill_viridis_d(end = 0.9) +
+  labs(title    = "HAND → Soil Moisture (M1)",
+       subtitle = "By wetland area — 80% credible ribbon",
+       x = "HAND — topographic position (std.)\n← wetter         drier →",
+       y = "Predicted SWC (std.)",
+       colour = "Area", fill = "Area") +
+  theme_classic(base_size = 12)
+
+g2 <- ggplot(pred_co2_swc, aes(x = swc_raw, y = co2_med)) +
+  geom_ribbon(aes(ymin = co2_lo, ymax = co2_hi), alpha = 0.2, fill = "#d73027") +
+  geom_line(linewidth = 1.2, colour = "#d73027") +
+  geom_vline(xintercept = median(peak_draws_C$peak_raw),
+             linetype = "dashed", colour = "grey30", linewidth = 0.7) +
+  annotate("text",
+           x = median(peak_draws_C$peak_raw) + 0.005,
+           y = max(pred_co2_swc$co2_med) * 0.96,
+           label = sprintf("Opt. ≈ %.2f", median(peak_draws_C$peak_raw)),
+           hjust = 0, size = 3.5, colour = "grey20") +
+  labs(title    = "Soil Moisture → CO₂ (M2c — quadratic + C)",
+       subtitle = "log(CO₂); organic carbon & HAND held at mean",
+       x = "Soil Water Content (raw)\n← drier          wetter →",
+       y = "Predicted log(CO₂)") +
+  theme_classic(base_size = 12)
+
+g3 <- ggplot(pred_ch4_swc, aes(x = swc_raw, y = ch4_med)) +
+  geom_ribbon(aes(ymin = ch4_lo, ymax = ch4_hi), alpha = 0.2, fill = "#2166ac") +
+  geom_line(linewidth = 1.2, colour = "#2166ac") +
+  labs(title    = "Soil Moisture → CH₄ (M3f — hurdle Gamma)",
+       subtitle = "Marginal E[CH₄] = P(emitting) × E[CH₄ | emitting]; temp & HAND at mean",
+       x = "Soil Water Content (raw)\n← drier          wetter →",
+       y = "Expected CH₄ flux (raw units)") +
+  theme_classic(base_size = 12)
+
+g1 / (g2 + g3)
+ggsave("Plots/Bayes_Synthesis_CausalChain.pdf", width = 10, height = 9)
+```
+
+### 8c. Seasonal variation in fluxes (random effects on month)
+
+> Updated to use M2c (CO₂ with organic carbon) and M3d (CH₄ linear + organic
+> carbon), which represent our most complete understanding of the fixed effects.
+> The month random intercepts capture residual seasonal variation not explained
+> by SWC, organic carbon, or HAND.
+
+```{r seasonal, fig.height=4, fig.width=8}
+# ── CO₂ month random effects from M2c ─────────────────────────────────────────
+ranef_month_co2 <- ranef(mod_co2_C)$month %>%
+  as.data.frame() %>%
+  rownames_to_column("month") %>%
+  rename(est = Estimate.Intercept, lo = Q2.5.Intercept, hi = Q97.5.Intercept) %>%
+  mutate(month = factor(month, levels = c("set24","nov24","fev25","jun25","set25","dez25")),
+         flux  = "CO₂ (M2c)")
+
+# ── CH₄ month random effects from M3d (linear SWC + C) ───────────────────────
+ranef_month_ch4 <- ranef(mod_ch4_C)$month %>%
+  as.data.frame() %>%
+  rownames_to_column("month") %>%
+  rename(est = Estimate.Intercept, lo = Q2.5.Intercept, hi = Q97.5.Intercept) %>%
+  mutate(month = factor(month, levels = c("set24","nov24","fev25","jun25","set25","dez25")),
+         flux  = "CH₄ (M3d)")
+
+bind_rows(ranef_month_co2, ranef_month_ch4) %>%
+  mutate(month_label = recode(as.character(month),
+    set24 = "Sep'24", nov24 = "Nov'24", fev25 = "Feb'25",
+    jun25 = "Jun'25", set25 = "Sep'25", dez25 = "Dec'25"
+  )) %>%
+  ggplot(aes(x = month_label, y = est, ymin = lo, ymax = hi,
+             colour = flux, group = flux)) +
+  geom_hline(yintercept = 0, linetype = "dashed", colour = "grey50") +
+  geom_linerange(position = position_dodge(0.4), linewidth = 1) +
+  geom_point(position = position_dodge(0.4), size = 3) +
+  scale_colour_manual(values = c("CO₂ (M2c)" = "#d73027", "CH₄ (M3d)" = "#2166ac")) +
+  scale_x_discrete(limits = c("Sep'24","Nov'24","Feb'25","Jun'25","Sep'25","Dec'25")) +
+  labs(title    = "Seasonal random effects on GHG fluxes",
+       subtitle = "Residual campaign shift after accounting for SWC, organic carbon & HAND",
+       x = "Field campaign", y = "Random intercept (log-flux units)",
+       colour = "Flux") +
+  theme_classic(base_size = 13)
+
+ggsave("Plots/Bayes_Synthesis_Seasonal.pdf", width = 8, height = 4)
+```
+
+### 8d. Campaign-level conditional effects (SWC, temperature, HAND)
+
+> Updated to use M2c for CO₂ and M3e (Gamma, linear SWC) for CH₄ — both models
+> share the same three-predictor structure (SWC, temperature, HAND), keeping the
+> 2 × 3 panel layout consistent. Each coloured line is one field campaign; the
+> **vertical spread** between lines reflects the seasonal random intercept shift.
+
+```{r temporal-conditional, fig.height=9, fig.width=11}
+# ── campaign display names and colours ────────────────────────────────────────
+campaign_labels <- c(
+  set24 = "Sep'24", nov24 = "Nov'24", fev25 = "Feb'25",
+  jun25 = "Jun'25", set25 = "Sep'25", dez25 = "Dec'25"
+)
+campaign_colours <- c(
+  "Sep'24" = "#1b7837",
+  "Nov'24" = "#762a83",
+  "Feb'25" = "#d73027",
+  "Jun'25" = "#f46d43",
+  "Sep'25" = "#4575b4",
+  "Dec'25" = "#313695"
+)
+
+# ── helper: sweep one predictor, include month RE only ────────────────────────
+pred_by_month <- function(model, focal_var, extra_cols = list(),
+                          n_seq = 50, ndraws = 300) {
+  seq_vals <- seq(-2.5, 2.5, length.out = n_seq)
+
+  new_d <- expand_grid(
+    val    = seq_vals,
+    month  = factor(levels(df_an$month), levels = levels(df_an$month)),
+    area   = unique(df_an$area)[1],
+    point2 = unique(df_an$point2)[1]
+  ) %>%
+    mutate(swc_s  = if (focal_var == "swc_s")  val else 0,
+           ts_s   = if (focal_var == "ts_s")   val else 0,
+           hand_s = if (focal_var == "hand_s") val else 0)
+
+  # add any extra constant columns needed by the model (e.g. C_s for M2c)
+  for (nm in names(extra_cols)) new_d[[nm]] <- extra_cols[[nm]]
+
+  new_d %>%
+    add_epred_draws(model, ndraws = ndraws, re_formula = ~(1 | month)) %>%
+    group_by(val, month) %>%
+    summarise(med = median(.epred),
+              lo  = quantile(.epred, 0.10),
+              hi  = quantile(.epred, 0.90),
+              .groups = "drop") %>%
+    mutate(campaign = recode(as.character(month), !!!campaign_labels),
+           campaign  = factor(campaign, levels = campaign_labels))
+}
+
+# ── CO₂: M2c (quadratic SWC + organic carbon) — C held at mean ───────────────
+co2_swc  <- pred_by_month(mod_co2_C, "swc_s",  extra_cols = list(C_s = 0))
+co2_ts   <- pred_by_month(mod_co2_C, "ts_s",   extra_cols = list(C_s = 0))
+co2_hand <- pred_by_month(mod_co2_C, "hand_s", extra_cols = list(C_s = 0))
+
+# ── CH₄: M3e Gamma (linear SWC, temperature, HAND) ───────────────────────────
+ch4_swc  <- pred_by_month(mod_ch4_gamma, "swc_s")
+ch4_ts   <- pred_by_month(mod_ch4_gamma, "ts_s")
+ch4_hand <- pred_by_month(mod_ch4_gamma, "hand_s")
+
+# ── axis back-transform values ─────────────────────────────────────────────────
+ts_mean   <- mean(df_an$ts,     na.rm = TRUE)
+ts_sd     <- sd(df_an$ts,       na.rm = TRUE)
+hand_mean <- mean(df_an$hand_p, na.rm = TRUE)
+hand_sd   <- sd(df_an$hand_p,   na.rm = TRUE)
+
+# ── panel factory ─────────────────────────────────────────────────────────────
+make_panel <- function(dat, x_label, y_label,
+                       x_raw_mean = NULL, x_raw_sd = NULL) {
+  if (!is.null(x_raw_mean))
+    dat <- dat %>% mutate(val = val * x_raw_sd + x_raw_mean)
+
+  ggplot(dat, aes(x = val, y = med,
+                  colour = campaign, fill = campaign, group = campaign)) +
+    geom_ribbon(aes(ymin = lo, ymax = hi), alpha = 0.10, colour = NA) +
+    geom_line(linewidth = 0.9) +
+    scale_colour_manual(values = campaign_colours) +
+    scale_fill_manual(  values = campaign_colours) +
+    labs(x = x_label, y = y_label, colour = "Campaign", fill = "Campaign") +
+    theme_classic(base_size = 11) +
+    theme(legend.position = "none", plot.title = element_blank())
+}
+
+# ── 6 panels ──────────────────────────────────────────────────────────────────
+p_co2_swc  <- make_panel(co2_swc,  "SWC (raw)",                    "log(CO₂)",
+                          swc_mean, swc_sd)
+p_co2_ts   <- make_panel(co2_ts,   "Temperature (°C)",             "",
+                          ts_mean,  ts_sd)
+p_co2_hand <- make_panel(co2_hand, "HAND — topo. position (rel.)", "",
+                          hand_mean, hand_sd)
+
+p_ch4_swc  <- make_panel(ch4_swc,  "SWC (raw)",                    "CH₄+5 (Gamma)",
+                          swc_mean, swc_sd)
+p_ch4_ts   <- make_panel(ch4_ts,   "Temperature (°C)",             "",
+                          ts_mean,  ts_sd)
+p_ch4_hand <- make_panel(ch4_hand, "HAND — topo. position (rel.)", "",
+                          hand_mean, hand_sd)
+
+# ── shared legend ─────────────────────────────────────────────────────────────
+legend_panel <- make_panel(co2_swc, "", "", swc_mean, swc_sd) +
+  guides(colour = guide_legend(title = "Campaign",
+                               override.aes = list(linewidth = 2, alpha = 1)),
+         fill = "none") +
+  theme(legend.position = "right",
+        legend.title    = element_text(size = 10, face = "bold"),
+        legend.text     = element_text(size = 9))
+
+shared_legend <- cowplot::get_legend(legend_panel)
+
+# ── assemble 2 × 3 grid + legend ──────────────────────────────────────────────
+grid_plots <- cowplot::plot_grid(
+  p_co2_swc,  p_co2_ts,  p_co2_hand,
+  p_ch4_swc,  p_ch4_ts,  p_ch4_hand,
+  nrow   = 2,
+  labels = c("CO₂ ~ SWC (M2c)", "CO₂ ~ Temp. (M2c)", "CO₂ ~ HAND (M2c)",
+             "CH₄ ~ SWC (M3e)", "CH₄ ~ Temp. (M3e)", "CH₄ ~ HAND (M3e)"),
+  label_size = 8, label_colour = "grey30", label_x = 0.02, label_y = 0.98
+)
+
+cowplot::plot_grid(grid_plots, shared_legend, rel_widths = c(1, 0.13))
+```
+
+```{r temporal-conditional-save}
+ggsave("Plots/Bayes_Temporal_ConditionalEffects.pdf", width = 12, height = 8)
+```
+
+> **How to read this plot:**
+> Each coloured line is one field campaign. The **vertical spread between lines**
+> is the estimated month random-intercept — the baseline flux level that cannot
+> be explained by SWC, temperature or HAND alone (e.g. antecedent rainfall,
+> phenological effects, litter inputs). The **slope and curvature** is shared
+> across campaigns because the model assumes fixed relationship shapes; a natural
+> next step would be adding random slopes for SWC to test whether the moisture
+> sensitivity itself changes across seasons.
+
+---
+
+## 9. Model Diagnostics
+
+```{r diagnostics, fig.height=5}
+# Posterior predictive checks for each model
+p_ppc1 <- pp_check(mod_swc, ndraws = 100) + ggtitle("M1 — SWC") + theme_classic()
+p_ppc2 <- pp_check(mod_co2, ndraws = 100) + ggtitle("M2 — CO₂") + theme_classic()
+p_ppc3 <- pp_check(mod_ch4, ndraws = 100) + ggtitle("M3 — CH₄") + theme_classic()
+p_ppc4 <- pp_check(mod_C,   ndraws = 100) + ggtitle("M4 — C") + theme_classic()
+
+(p_ppc1 + p_ppc2) / (p_ppc3 + p_ppc4)
+ggsave("Plots/Bayes_PPChecks.pdf", width = 10, height = 7)
+```
+
+```{r r-squared}
+# Bayesian R²
+cat("=== Bayesian R² ===\n")
+cat("M1 SWC:  "); print(bayes_R2(mod_swc))
+cat("M2 CO2:  "); print(bayes_R2(mod_co2))
+cat("M3 CH4:  "); print(bayes_R2(mod_ch4))
+cat("M4 C:    "); print(bayes_R2(mod_C))
+```
+
+---
+
+*Models cached as `.rds` in `Data/`. Re-knit after deleting those files to refit.*
