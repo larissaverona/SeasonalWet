@@ -14,9 +14,8 @@ Amostramos 5 gradientes de umidade/solo a fim de compreender quais mecanismos de
 
   ## Pacotes
 ```{r}
-#rm(list=ls())
-library(dplyr)
-library(ggplot2)
+rm(list=ls())
+library(tidyverse)
 library(tidyr)
 library(lme4)
 library(nlme)
@@ -32,7 +31,6 @@ library(ggeffects)
 library(cowplot)
 library (viridis)
 library(runner)
-
 library(randomForest)
 library(xgboost)
 library(caret) #para grid search
@@ -41,184 +39,62 @@ library(caret) #para grid search
 
 ## Dados
 ```{r}
-setwd("G:/Meu Drive/1. Meu Computador/Pesquisa/Cary Felowship/Dados/Processado")
+# 1. List all csv
+files <- list.files(
+  path = "Data/FluxProcessed",
+  pattern = "^(vvt|7q|bbt|cr|ing).+\\.csv$",
+  full.names = TRUE
+)
 
-#Setembro
-vvt_set24 <- read.csv("vvt_set24.csv", sep=";", skip=1) %>% 
-  slice(-1) %>% 
-  mutate(area="vvt", month="set24")  %>%
-  mutate(datetime= lubridate::dmy_hm(datetime))
+# 2. Function to deal with different formats
+read_allfiles <- function(arq) {
+  
+  # Detectar o separador
+  sep_df <- if(grepl(";", readLines(arq, n = 1))) ";" else ","
+  
+  # 1. Pegar apenas o nome do arquivo (sem o caminho das pastas)
+  # 2. Remover a extensão .csv
+  file_name <- str_remove(basename(arq), "\\.csv")
+  
+  # 3. Agora o split vai funcionar como esperado
+  meta <- str_split(file_name, "_")[[1]]
+  
+  df_temp <- read.csv(arq, sep = sep_df, skip = 1) %>%
+    slice(-1) %>%
+    # Agora meta[1] será "vvt" e meta[2] será "set24"
+    mutate(area = meta[1], month = meta[2])
+  
+  # Lógica de nomes de coluna
+  if ("DATE_TIME.initial_value" %in% names(df_temp)) {
+    df_temp <- df_temp %>% rename(datetime = DATE_TIME.initial_value)
+  }
+  
+  # Formatos de data
+  df_temp <- df_temp %>%
+    mutate(datetime = parse_date_time(datetime, orders = c("dmy HM", "ymd HMS")))
+  
+  return(df_temp)
+}
 
-seteq_set24 <- read.csv("7q_set24.csv", sep=";", skip=1) %>% 
-  slice(-1) %>% 
-  mutate(area="seteq", month="set24")  %>%
-  mutate(datetime= lubridate::dmy_hm(datetime))
-
-bbt_set24 <- read.csv("bbt_set24.csv", sep=";", skip=1) %>% 
-  slice(-1) %>% 
-  mutate(area="bbt", month="set24")  %>%
-  mutate(datetime= lubridate::dmy_hm(datetime))
-
-cr_set24 <- read.csv("cr_set24.csv", sep=";", skip=1) %>% 
-  slice(-1) %>% 
-  mutate(area="cr", month="set24")  %>%
-  mutate(datetime= lubridate::dmy_hm(datetime))
-
-ing_set24 <- read.csv("ing_set24.csv", sep=";", skip=1) %>% 
-  slice(-1) %>% 
-  mutate(area="ing", month="set24")  %>%
-  mutate(datetime= lubridate::dmy_hm(datetime))
-
-#Novembro
-
-vvt_nov24 <- read.csv("vvt_nov24.csv", sep=";", skip=1) %>% 
-  slice(-1) %>% 
-  mutate(area="vvt", month="nov24")  %>%
-  mutate(datetime= lubridate::dmy_hm(datetime))
-
-seteq_nov24 <- read.csv("7q_nov24.csv", sep=";", skip=1) %>% 
-  slice(-1) %>% 
-  mutate(area="seteq", month="nov24")  %>%
-  mutate(datetime= lubridate::dmy_hm(datetime))
-
-bbt_nov24 <- read.csv("bbt_nov24.csv", sep=";", skip=1) %>% 
-  slice(-1) %>% 
-  mutate(area="bbt", month="nov24")  %>%
-  mutate(datetime= lubridate::dmy_hm(datetime))
-
-cr_nov24 <- read.csv("cr_nov24.csv", sep=";",  skip=1) %>% 
-  slice(-1) %>% 
-  mutate(area="cr", month="nov24") %>%
-  mutate(datetime= lubridate::dmy_hm(datetime))
-
-ing_nov24 <- read.csv("ing_nov24.csv", sep=";", skip=1) %>% 
-  slice(-1) %>% 
-  mutate(area="ing", month="nov24") %>%
-  mutate(datetime= lubridate::dmy_hm(datetime))
-
-
-#Fev 
-vvt_fev25 <- read.csv("vvt_fev25.csv", sep=";", skip=1) %>% 
-  slice(-1) %>% 
-  mutate(area="vvt", month="fev25") %>%
-  mutate(datetime= lubridate::dmy_hm(datetime))
-
-seteq_fev25 <- read.csv("7q_fev25.csv", sep=";", skip=1) %>% 
-  slice(-1) %>% 
-  mutate(area="seteq", month="fev25") %>%
-  mutate(datetime= lubridate::dmy_hm(datetime))
-
-bbt_fev25 <- read.csv("bbt_fev25.csv", sep=";", skip=1) %>% 
-  slice(-1) %>% 
-  mutate(area="bbt", month="fev25") %>%
-  mutate(datetime= lubridate::dmy_hm(datetime))
-
-cr_fev25 <- read.csv("cr_fev25.csv", sep=";",  skip=1) %>% 
-  slice(-1) %>% 
-  mutate(area="cr", month="fev25") %>%
-  mutate(datetime= lubridate::dmy_hm(datetime))
-
-ing_fev25 <- read.csv("ing_fev25.csv", sep=";", skip=1) %>% 
-  slice(-1) %>% 
-  mutate(area="ing", month="fev25") %>%
-  mutate(datetime= lubridate::dmy_hm(datetime))
-
-#Jun
-vvt_jun25 <- read.csv("vvt_jun25.csv", sep=";", skip=1) %>% 
-  slice(-1) %>% 
-  mutate(area="vvt", month="jun25") %>%
-  mutate(datetime= lubridate::dmy_hm(datetime))
-
-seteq_jun25 <- read.csv("7q_jun25.csv", sep=";", skip=1) %>% 
-  slice(-1) %>% 
-  mutate(area="seteq", month="jun25") %>%
-  mutate(datetime= lubridate::dmy_hm(datetime))
-
-bbt_jun25 <- read.csv("bbt_jun25.csv", sep=";", skip=1) %>% 
-  slice(-1) %>% 
-  mutate(area="bbt", month="jun25") %>%
-  mutate(datetime= lubridate::dmy_hm(datetime))
-
-cr_jun25 <- read.csv("cr_jun25.csv", sep=";",  skip=1) %>% 
-  slice(-1) %>% 
-  mutate(area="cr", month="jun25") %>%
-  mutate(datetime= lubridate::dmy_hm(datetime))
-
-ing_jun25 <- read.csv("ing_jun25.csv", sep=";", skip=1) %>% 
-  slice(-1) %>% 
-  mutate(area="ing", month="jun25") %>%
-  mutate(datetime= lubridate::dmy_hm(datetime))
-
-#set
-vvt_set25 <- read.csv("vvt_set25.csv", sep=";", skip=1) %>% 
-  slice(-1) %>% 
-  mutate(area="vvt", month="set25") %>% 
-  rename(datetime=DATE_TIME.initial_value) %>%
-  mutate(datetime= lubridate::dmy_hm(datetime)) 
-
-seteq_set25 <- read.csv("7q_set25.csv", sep=",", skip=1) %>% 
-  slice(-1) %>% 
-  mutate(area="seteq", month="set25") %>% 
-  rename(datetime=DATE_TIME.initial_value) %>% mutate(datetime= lubridate::ymd_hms(datetime)) 
-
-bbt_set25 <- read.csv("bbt_set25.csv", sep=",", skip=1) %>% 
-  slice(-1) %>% 
-  mutate(area="bbt", month="set25") %>% 
-  rename(datetime=DATE_TIME.initial_value) %>% mutate(datetime= lubridate::ymd_hms(datetime)) 
-
-cr_set25 <- read.csv("cr_set25.csv", sep=",",  skip=1) %>% 
-  slice(-1) %>% 
-  mutate(area="cr", month="set25") %>% 
-  rename(datetime=DATE_TIME.initial_value) %>% mutate(datetime= lubridate::ymd_hms(datetime)) 
-
-ing_set25 <- read.csv("ing_set25.csv", sep=",", skip=1) %>% 
-  slice(-1) %>% 
-  mutate(area="ing", month="set25") %>% 
-  rename(datetime=DATE_TIME.initial_value) %>% mutate(datetime= lubridate::ymd_hms(datetime)) 
-
-#dez
-vvt_dez25 <- read.csv("vvt_dez25.csv", sep=",", skip=1) %>% 
-  slice(-1) %>% 
-  mutate(area="vvt", month="dez25") %>% 
-  rename(datetime=DATE_TIME.initial_value) %>% mutate(datetime= lubridate::ymd_hms(datetime)) 
-
-seteq_dez25 <- read.csv("7q_dez25.csv", sep=",", skip=1) %>% 
-  slice(-1) %>% 
-  mutate(area="seteq", month="dez25") %>% 
-  rename(datetime=DATE_TIME.initial_value) %>% mutate(datetime= lubridate::ymd_hms(datetime)) 
-
-bbt_dez25 <- read.csv("bbt_dez25.csv", sep=",", skip=1) %>% 
-  slice(-1) %>% 
-  mutate(area="bbt", month="dez25") %>% 
-  rename(datetime=DATE_TIME.initial_value) %>% mutate(datetime= lubridate::ymd_hms(datetime)) 
-
-cr_dez25 <- read.csv("cr_dez25.csv", sep=",",  skip=1) %>% 
-  slice(-1) %>% 
-  mutate(area="cr", month="dez25") %>% 
-  rename(datetime=DATE_TIME.initial_value) %>% mutate(datetime= lubridate::ymd_hms(datetime)) 
-
-ing_dez25 <- read.csv("ing_dez25.csv", sep=",", skip=1) %>% 
-  slice(-1) %>% 
-  mutate(area="ing", month="dez25") %>% 
-  rename(datetime=DATE_TIME.initial_value) %>% mutate(datetime= lubridate::ymd_hms(datetime)) 
-```
-
-Juntando tudo em uma planilha
-```{r}
-df <- rbind(vvt_set24, seteq_set24, bbt_set24, cr_set24, ing_set24, 
-            vvt_nov24, seteq_nov24, bbt_nov24, cr_nov24, ing_nov24, 
-            vvt_fev25, seteq_fev25, bbt_fev25, cr_fev25, ing_fev25,
-            vvt_jun25, seteq_jun25, bbt_jun25, cr_jun25, ing_jun25,
-            vvt_set25, seteq_set25, bbt_set25, cr_set25, ing_set25,
-            vvt_dez25, seteq_dez25, bbt_dez25, cr_dez25, ing_dez25) %>% 
-  mutate_at(vars(3, 4, 7:14), as.numeric) %>%
-  mutate_at(vars(2,16,17), as.factor) %>%
-  rename(point = COMMENT, swc = SWC_2.mean, ts = TS_2.mean, fch4 = FCH4_DRY, fco2=FCO2_DRY) %>%
-  mutate(fch4_nu = (fch4/1000)*86400) %>%
-  mutate(month=factor(month, levels=c("set24", "nov24", "fev25", "jun25", "set25", "dez25")))
+# 3. Processing
+df <- files %>% 
+  map_dfr(read_allfiles) %>%
+  
+  mutate(across(c(3, 4, 7:14), as.numeric),
+         across(c(2, 16, 17), as.factor)) %>%
+  rename(point = COMMENT, 
+         swc = SWC_2.mean, 
+         ts = TS_2.mean, 
+         fch4 = FCH4_DRY, 
+         fco2 = FCO2_DRY,
+         lat = LATITUDE,
+         long = LONGITUDE) %>%
+  mutate(month = factor(month, levels = c("set24", "nov24", "fev25", "jun25", "set25", "dez25"))) %>%
+  mutate(area=case_when(area =="7q"~"seteq",
+         TRUE ~ as.character(area)))
 
 str(df)
-  
+rm(files)
 ```
 
 ### Solos
@@ -276,25 +152,20 @@ str(df)
 Adicionando dados solo
 
 ```{r}
-setwd("G:/Meu Drive/1. Meu Computador/Pesquisa/Cary Felowship/Dados/Solos")
-solos <- read.csv("Solo.csv", sep=";")
-
-df <- left_join(df, solos, by=c("area", "point"))
+soil <- read.csv("Data/Soils/Soil.csv", sep=";") 
+df <- left_join(df, soil, by=c("area", "point"))
 ```
 
 ### HAND
 Adicionando dados HAND
 ```{r}
-setwd("G:/Meu Drive/1. Meu Computador/Pesquisa/Cary Felowship/Dados/HAND")
-hand <- read.csv("Flux_points_HAND.csv", sep=";") %>% 
-  select("area", "point", "hand") %>% 
+hand <- read.csv("Data/Hand/Flux_points_HAND.csv", sep=";") %>% 
+  dplyr::select("area", "point", "hand") %>% 
   group_by(area) %>%
   mutate(hand_p = (hand-min(hand))/(max(hand)-min(hand)))
 
 df <- left_join(df, hand, by=c("area", "point")) %>% mutate(area=factor(area),
        point=factor(point, levels=c("P1", "P2", "P3", "P4", "P5", "P6", "P7", "P8", "P9", "P10")))
-
-
 ```
 
 ### Plots Exploratórios

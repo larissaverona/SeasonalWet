@@ -501,7 +501,8 @@ metrics_base <- tms_day %>%
     max = max(TMS_moist, na.rm = TRUE),
     min = min(TMS_moist, na.rm = TRUE),
     mean = mean(TMS_moist, na.rm = TRUE),
-    sd = sd(TMS_moist, na.rm = TRUE))
+    sd = sd(TMS_moist, na.rm = TRUE),
+    range = max-min)
     
     # Saturation (saturated if moisture > 95% from point max)
 metrics_base2 <- tms_day %>%
@@ -759,7 +760,7 @@ df <-  left_join(df, hand, by=c("area", "point")) %>% mutate(area=factor(area),
 Scaling
 
 ```{r}
-df_main <- df[, c(9,10,11,12, 16,20,30,31,32,33,34,35,36,38,39,40,41,42,43,44,45,46)]
+df_main <- df[, -c(3,4,5,6,7,8,9,11,13,14,15,17,18,19,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,37,38, 41, 45,48,49,50,51,52)]
 
 df_scaled <- df_main %>% 
   mutate(across(where(is.numeric), ~ as.vector(scale(.))))
@@ -772,7 +773,16 @@ df_numeric <- df_scaled %>% dplyr::select(where(is.numeric))
 library(ggcorrplot)  
   
   corr_matrix <- cor(df_numeric %>% na.omit())
-  
+  cor_tri <- as.data.frame(as.table(corr_matrix))
+
+#apenas parte superior da matriz
+relatorio_corr <- cor_tri[as.numeric(cor_tri$Var1) < as.numeric(cor_tri$Var2), ]
+#valores absolutos
+relatorio_corr$abs_cor <- abs(relatorio_corr$Freq)
+
+redundantes <- relatorio_corr[relatorio_corr$abs_cor > 0.7, ]
+colnames(redundantes) <- c("Variavel_A", "Variavel_B", "Correlacao", "Abs_Cor")
+
   # Criar o gráfico
   ggcorrplot(corr_matrix, 
                   hc.order = TRUE, 
@@ -1010,7 +1020,7 @@ df_final %>%
   stat_compare_means()
 
 df_final %>% 
-  ggplot(aes(x=hand, y=transition_slope)) +
+  ggplot(aes(x=hand_p, y=transition_slope)) +
   geom_point()+
   geom_smooth()+
   stat_cor()
@@ -1124,36 +1134,30 @@ hand_p <- df_final %>%
   theme_clean()+
   stat_compare_means(label = "p.format", label.x = 1)
 
-hand <- df_final %>% 
-  ggplot(aes(x=cluster_pca, y=hand)) +
-  geom_boxplot()+
-  geom_jitter()+
-  theme_clean()+
-  stat_compare_means(label = "p.format", label.x = 1)
 
 wet_month <- df_final %>% 
-  ggplot(aes(x=cluster_pca, y=wettest_month)) +
+  ggplot(aes(x=cluster_bruto, y=wettest_month)) +
   geom_boxplot()+
   geom_jitter()+
   theme_clean()+
   stat_compare_means(label = "p.format", label.x = 1)
 
 dry_month <- df_final %>% 
-  ggplot(aes(x=cluster_pca, y=driest_month)) +
+  ggplot(aes(x=cluster_bruto, y=driest_month)) +
   geom_boxplot()+
   geom_jitter()+
   theme_clean()+
   stat_compare_means(label = "p.format", label.x = 1)
 
 wet_quarter <- df_final %>% 
-  ggplot(aes(x=cluster_pca, y=wettest_quarter)) +
+  ggplot(aes(x=cluster_bruto, y=wettest_quarter)) +
   geom_boxplot()+
   geom_jitter()+
   theme_clean()+
   stat_compare_means(label = "p.format", label.x = 1)
 
 dry_quarter <- df_final %>% 
-  ggplot(aes(x=cluster_pca, y=driest_quarter)) +
+  ggplot(aes(x=cluster_bruto, y=driest_quarter)) +
   geom_boxplot()+
   geom_jitter()+
   theme_clean()+
@@ -1195,10 +1199,10 @@ ggsave("Plots/ClusterDescription.png", unit="cm", width = 30, height = 25)
 Testing CO2
 
 ```{r}
-anova_co2 <- aov(log(fco2+1) ~ cluster_pca*month, data=df_fluxTST)
+anova_co2 <- aov(log(fco2+1) ~ cluster_bruto*month, data=df_fluxTST)
 summary(anova_co2)
 
-em_co2 <- emmeans(anova_co2, ~ cluster_pca | month)
+em_co2 <- emmeans(anova_co2, ~ cluster_bruto | month)
 pairs_co2 <- pairs(em_co2, adjust = "tukey")
 summary(pairs_co2)
 cld_co2 <- cld(em_co2, Letters = letters, adjust = "tukey")
@@ -1224,7 +1228,7 @@ df_letras_co2 <- df_letras_co2 %>%
 ```{r}
 df_fluxTST %>% 
   mutate(month = factor(month, levels = c("set24", "nov24", "fev25", "jun25", "set25", "dez25"))) %>%
-  ggplot(aes(x = cluster_pca, y = log(fco2 + 1))) +
+  ggplot(aes(x = cluster_bruto, y = log(fco2 + 1))) +
   
   # Boxplot e Jitter
   geom_boxplot(alpha = 0.4, outlier.shape = NA) +
@@ -1232,7 +1236,7 @@ df_fluxTST %>%
   
   # Camada de Letras (Post-hoc)
   geom_text(data = df_letras_co2, 
-            aes(x = cluster_pca, y = y_pos, label = .group), 
+            aes(x = cluster_bruto, y = y_pos, label = .group), 
             vjust = -0.5,           
             fontface = "bold", 
             size = 4, 
@@ -1254,10 +1258,10 @@ df_fluxTST %>%
 Testing CH4
 
 ```{r}
-anova_ch4 <- aov(log(fch4+5) ~ cluster_pca*month, data=df_fluxTST)
+anova_ch4 <- aov(log(fch4+5) ~ cluster_bruto*month, data=df_fluxTST)
 summary(anova_ch4)
 
-em_ch4 <- emmeans(anova_ch4, ~ cluster_pca | month)
+em_ch4 <- emmeans(anova_ch4, ~ cluster_bruto | month)
 
 pairs_ch4 <- pairs(em_ch4, adjust = "tukey")
 summary(pairs_ch4)
@@ -1286,7 +1290,7 @@ df_letras_ch4 <- df_letras_ch4 %>%
 ```{r}
 df_fluxTST %>% 
   mutate(month = factor(month, levels = c("set24", "nov24", "fev25", "jun25", "set25", "dez25"))) %>%
-  ggplot(aes(x = cluster_pca, y = log(fch4 + 5))) +
+  ggplot(aes(x = cluster_bruto, y = log(fch4 + 5))) +
   
 
   geom_boxplot(alpha = 0.4, outlier.shape = NA) +
@@ -1294,7 +1298,7 @@ df_fluxTST %>%
   
   
   geom_text(data = df_letras_ch4, 
-            aes(x = cluster_pca, y = y_pos, label = .group), 
+            aes(x = cluster_bruto, y = y_pos, label = .group), 
             vjust = -0.5,           
             fontface = "bold", 
             size = 4, 

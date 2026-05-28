@@ -30,22 +30,27 @@ files <- list.files(
 # 2. Function to deal with different formats
 read_allfiles <- function(arq) {
   
-  # Detect if the sep
-  sep_df <- if(grepl(";", readLines(arq, n=1))) ";" else ","
+  # Detectar o separador
+  sep_df <- if(grepl(";", readLines(arq, n = 1))) ";" else ","
   
-  # Metadate file
-  meta <- str_split(str_remove(arq, ".csv"), "_")[[1]]
+  # 1. Pegar apenas o nome do arquivo (sem o caminho das pastas)
+  # 2. Remover a extensão .csv
+  file_name <- str_remove(basename(arq), "\\.csv")
+  
+  # 3. Agora o split vai funcionar como esperado
+  meta <- str_split(file_name, "_")[[1]]
   
   df_temp <- read.csv(arq, sep = sep_df, skip = 1) %>%
     slice(-1) %>%
+    # Agora meta[1] será "vvt" e meta[2] será "set24"
     mutate(area = meta[1], month = meta[2])
   
-  # Deal with data column name
+  # Lógica de nomes de coluna
   if ("DATE_TIME.initial_value" %in% names(df_temp)) {
     df_temp <- df_temp %>% rename(datetime = DATE_TIME.initial_value)
   }
   
-  # Deal with data formats
+  # Formatos de data
   df_temp <- df_temp %>%
     mutate(datetime = parse_date_time(datetime, orders = c("dmy HM", "ymd HMS")))
   
@@ -85,7 +90,7 @@ df <- left_join(df, soil, by=c("area", "point"))
 
 ```{r}
 hand <- read.csv("Data/Hand/Flux_points_HAND.csv", sep=";") %>% 
-  select("area", "point", "hand") %>% 
+  dplyr::select("area", "point", "hand") %>% 
   group_by(area) %>%
   mutate(hand_p = (hand-min(hand))/(max(hand)-min(hand)))
 
@@ -108,7 +113,7 @@ prep <- read.csv("Data/Preciptation/Prep_CHIRPS.csv", sep=";") %>%
          prep_3mt = acum_3_meses,
          prep_4mt = acum_4_meses,
          prep_day = precip_dia) %>%
-  select(-c(data))
+  dplyr::select(-c(data))
 
 df <- left_join(df, prep, by=c("area", "point", "month"))
 ```
@@ -120,7 +125,7 @@ Testing the preliminar models individually to see patterns
 Correlations
 ```{r}
 df_cor <- df %>%
-  select(swc, ts, fch4, fco2, N, C, sand, silt, clay, hand, hand_p, prep_wk, prep_1mt, prep_2mt, prep_3mt, prep_4mt, prep_wk, prep_day) %>%  drop_na() 
+  dplyr::select(swc, ts, fch4, fco2, N, C, sand, silt, clay, hand, hand_p, prep_wk, prep_1mt, prep_2mt, prep_3mt, prep_4mt, prep_wk, prep_day) %>%  drop_na() 
 
 corr <- round(cor(df_cor), 2)
 
@@ -331,7 +336,7 @@ sjPlot::tab_model(mod_ch45) #nao explica
 For CO2 fluxes
 ```{r}
 
-df_psem <- df %>% mutate(point2 = paste(area, point))  %>% select(area, point,point2, prep_2mt, hand_p, swc, C, ts, sand, clay, fco2, fch4, month) %>% mutate(fco2 = log(fco2+1), fch4 = log(fch4+5), C=log(C)) %>% group_by(point2) %>%
+df_psem <- df %>% mutate(point2 = paste(area, point))  %>% dplyr::select(area, point,point2, prep_2mt, hand_p, swc, C, ts, sand, clay, fco2, fch4, month) %>% mutate(fco2 = log(fco2+1), fch4 = log(fch4+5), C=log(C)) %>% group_by(point2) %>%
   mutate(swc_mean = mean(swc)) %>% mutate(swc_resid = swc-swc_mean) %>%
   ungroup() %>%  na.omit() 
 
@@ -366,6 +371,64 @@ summary(psem_ch4)
 
 plot(psem_ch4)
 ```
+
+
+
+For CH4 fluxes
+```{r}
+psem_ch4 <- psem(
+  mod1 <- lmer(swc ~ prep_2mt+hand_p+clay+ (1|area), data=df_psem),
+  mod2 <- lmer(C ~  swc_mean+hand_p+clay+ (1|area), data=df_psem),
+  mod3 <- lmer(ts ~  swc+prep_2mt + (1|area), data=df_psem),
+ # mod4 <- lmer(clay ~ hand_p + swc_mean + (1|area), data=df_psem), #I excluded clay because it is completely explained by the random element. Therefore, it is an exogenous variable.
+  mod5 <- lmer(fch4 ~ prep_2mt+swc*ts+C+clay + (1|area/point), data=df_psem),
+  swc_mean %~~% swc,
+  data=df_psem)
+
+
+summary(psem_ch4)
+
+plot(psem_ch4)
+```
+
+### Without peat points
+
+```{r}
+df_psem2 <- df %>% filter(C<20) %>% mutate(point2 = paste(area, point))  %>% dplyr::select(area, point,point2, prep_2mt, hand_p, swc, C, ts, sand, clay, fco2, fch4, month) %>% mutate(fco2 = log(fco2+1), fch4 = log(fch4+5), C=log(C)) %>% group_by(point2) %>%
+  mutate(swc_mean = mean(swc)) %>% mutate(swc_resid = swc-swc_mean) %>%
+  ungroup() %>%  na.omit()
+
+psem_co2_2 <- psem(
+  mod1 <- lmer(swc ~ prep_2mt+hand_p+clay+ (1|area), data=df_psem2),
+  mod2 <- lmer(C ~  swc_mean+hand_p+clay+ (1|area), data=df_psem2),
+  mod3 <- lmer(ts ~  swc+prep_2mt + (1|area), data=df_psem2),
+ # mod4 <- lmer(clay ~ hand_p + swc_mean + (1|area), data=df_psem), #I excluded clay because it is completely explained by the random element. Therefore, it is an exogenous variable.
+  mod5 <- lmer(fco2 ~ swc*ts+C+clay + (swc|area/point), data=df_psem2),
+  swc_mean %~~% swc,
+  data=df_psem2)
+
+
+summary(psem_co2_2)
+
+plot(psem_co2_2)
+```
+
+```{r}
+psem_ch4_2 <- psem(
+  mod1 <- lmer(swc ~ prep_2mt+hand_p+clay+ (1|area), data=df_psem2),
+  mod2 <- lmer(C ~  swc_mean+hand_p+clay+ (1|area), data=df_psem2),
+  mod3 <- lmer(ts ~  swc+prep_2mt + (1|area), data=df_psem2),
+ # mod4 <- lmer(clay ~ hand_p + swc_mean + (1|area), data=df_psem), #I excluded clay because it is completely explained by the random element. Therefore, it is an exogenous variable.
+  mod5 <- lmer(fch4 ~ prep_2mt+swc*ts+C+clay + (1|area/point), data=df_psem2),
+  swc_mean %~~% swc,
+  data=df_psem2)
+
+
+summary(psem_ch4_2)
+
+plot(psem_ch4_2)
+```
+
 
 ## Ploting
 

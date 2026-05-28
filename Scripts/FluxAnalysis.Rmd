@@ -1,0 +1,870 @@
+---
+title: "FluxAnalysis"
+author: "Larissa Verona"
+date: "2026-05-14"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+##Initial Processing
+
+### Packages 
+```{r}
+#usethis::use_git()
+#usethis::use_github(private=T)
+library(tidyverse)
+library(lme4)
+library(performance)
+library(DHARMa)
+library(viridis)
+library(ggthemes)
+library(ggpubr)
+library(factoextra)
+
+rm(list=ls())
+```
+
+### Flux Data
+```{r}
+# 1. List all csv
+files <- list.files(
+  path = "Data/FluxProcessed",
+  pattern = "^(vvt|7q|bbt|cr|ing).+\\.csv$",
+  full.names = TRUE
+)
+
+# 2. Function to deal with different formats
+read_allfiles <- function(arq) {
+  
+  # Detectar o separador
+  sep_df <- if(grepl(";", readLines(arq, n = 1))) ";" else ","
+  
+  # 1. Pegar apenas o nome do arquivo (sem o caminho das pastas)
+  # 2. Remover a extensão .csv
+  file_name <- str_remove(basename(arq), "\\.csv")
+  
+  # 3. Agora o split vai funcionar como esperado
+  meta <- str_split(file_name, "_")[[1]]
+  
+  df_temp <- read.csv(arq, sep = sep_df, skip = 1) %>%
+    dplyr::slice(-1) %>%
+    # Agora meta[1] será "vvt" e meta[2] será "set24"
+    mutate(area = meta[1], month = meta[2])
+  
+  # Lógica de nomes de coluna
+  if ("DATE_TIME.initial_value" %in% names(df_temp)) {
+    df_temp <- df_temp %>% rename(datetime = DATE_TIME.initial_value)
+  }
+  
+  # Formatos de data
+  df_temp <- df_temp %>%
+    mutate(datetime = parse_date_time(datetime, orders = c("dmy HM", "ymd HMS")))
+  
+  return(df_temp)
+}
+
+# 3. Processing
+df <- files %>% 
+  map_dfr(read_allfiles) %>%
+  
+  mutate(across(c(3, 4, 7:14), as.numeric),
+         across(c(2, 16, 17), as.factor)) %>%
+  rename(point = COMMENT, 
+         swc = SWC_2.mean, 
+         ts = TS_2.mean, 
+         fch4 = FCH4_DRY, 
+         fco2 = FCO2_DRY,
+         lat = LATITUDE,
+         long = LONGITUDE) %>%
+  mutate(month = factor(month, levels = c("set24", "nov24", "fev25", "jun25", "set25", "dez25"))) %>%
+  mutate(area=case_when(area =="7q"~"seteq",
+         TRUE ~ as.character(area)))
+
+str(df)
+rm(files)
+
+
+```
+
+### Soil Data
+
+```{r}
+soil <- read.csv("Data/Soils/Soil.csv", sep=";") 
+df <- left_join(df, soil, by=c("area", "point"))
+```
+
+### HAND Data
+(Hight Above Near Drainage)
+
+```{r}
+hand <- read.csv("Data/Hand/Flux_points_HAND.csv", sep=";") %>% 
+  dplyr::select("area", "point", "hand") %>% 
+  group_by(area) %>%
+  mutate(hand_p = (hand-min(hand))/(max(hand)-min(hand)))
+
+df <- left_join(df, hand, by=c("area", "point")) %>% mutate(area=factor(area),
+       point=factor(point, levels=c("P1", "P2", "P3", "P4", "P5", "P6", "P7", "P8", "P9", "P10")))
+```
+
+##General Analysis
+
+### Descriptive data
+
+CO2
+```{r}
+df[which.max(df$fco2),] #max
+df[which.min(df$fco2),] #min 
+
+
+n <- ceiling(nrow(df) * 0.05) # number of lines representing 5%
+co2_top5 <- order(df$fco2, decreasing = TRUE)[1:n]
+df[co2_top5, ] %>% dplyr::select(swc, C) %>% summarise(mean(C), mean(swc))
+
+df %>% group_by(area, point) %>% summarise(meanco2 = mean(fco2), meanch4 =  mean(fch4), sdco2 = sd(fco2), sdch4 = sd(fch4), hand_p=mean(hand_p)) %>% 
+  ggplot(aes(x=hand_p, y=sdch4)) +
+  geom_point() +
+  geom_smooth(method="lm")+
+  stat_cor()
+```
+
+CH4
+```{r}
+df[which.max(df$fch4),] #max
+df[which.min(df$fch4),] #min 
+
+
+n <- ceiling(nrow(df) * 0.05) # number of lines representing 5%
+co2_top5 <- order(df$fco2, decreasing = TRUE)[1:n]
+df[co2_top5, ] %>% dplyr::select(swc, C) %>% summarise(mean(C), mean(swc))
+
+df %>% filter(fch4>0) %>% group_by(month) %>% summarise(n(), mean(C), min(C), mean(hand_p), max(hand_p))
+
+df <- df %>% 
+  mutate(
+    season = case_when(
+      month %in% c("set24", "set25", "jun25") ~ "dry",
+      TRUE ~ "wet"
+    )
+  )
+
+lm(fco2~season, data=df) %>% summary()
+```
+
+
+## Overall Data for Fluxes
+
+```{r}
+df_overall <- df %>%
+  group_by(area, point) %>%
+  summarise(meanCO2 = mean(fco2), meanCH4 =  mean(fch4),  sdCO2 = sd(fco2), sdCH4 = sd(fch4), medianCO2 = median(fco2), medianCH4=median(fch4), maxCO2 = max(fco2), maxCH4 = max(fch4), minCO2 = min(fco2), minCH4 = min(fch4), hand_p=mean(hand_p), minSWC = min(swc), maxSWC=max(swc), meanSWC= mean(swc, na.rm=T), medianSWC=median(swc, na.rm=T), sdSWC=sd(swc, na.rm=T), C=mean(C), clay=mean(clay), hand=mean(hand))
+```
+
+Means, meadians, max, min and sd
+```{r}
+df_overall %>% 
+  ggplot(aes(x=hand_p, y=meanCO2, color=C)) +
+  geom_point()+
+  #geom_smooth()+
+  #stat_cor()+
+  facet_wrap(~area)
+
+df_overall %>% 
+  ggplot(aes(x=hand_p, y=medianCO2, color=C)) +
+  geom_point()+
+  #geom_smooth()+
+  #stat_cor()+
+  facet_wrap(~area)
+
+
+
+df_overall %>% 
+  ggplot(aes(x=hand_p, y=sdCO2, color=meanSWC, size=C)) +
+  geom_point()+
+  #geom_smooth(method="lm")+
+  #stat_cor()+
+  facet_wrap(~area)
+
+df_overall %>% 
+  ggplot(aes(x=hand_p, y=maxCO2, color=C)) +
+  geom_point()+
+#  geom_smooth()+
+  #stat_cor()+
+  facet_wrap(~area)
+
+df_overall %>% 
+  ggplot(aes(x=hand_p, y=minCO2, color=C)) +
+  geom_point()+
+#  geom_smooth()+
+  #stat_cor()+
+  facet_wrap(~area)
+
+
+df_overall %>% 
+  ggplot(aes(x=hand_p, y=meanCH4, color=C)) +
+  geom_point()+
+#  geom_smooth()+
+  stat_cor()+
+  facet_wrap(~area)
+
+df_overall %>% 
+  ggplot(aes(x=hand_p, y=medianCH4, color=C)) +
+  geom_point()+
+#  geom_smooth()+
+  #stat_cor()+
+  facet_wrap(~area)
+
+df_overall %>% 
+  ggplot(aes(x=hand_p, y=sdCH4, color=meanSWC, size=C)) +
+  geom_point()+
+#  geom_smooth()+
+  #stat_cor()+
+  facet_wrap(~area)
+
+df_overall %>% 
+  ggplot(aes(x=hand_p, y=minCH4, color=C)) +
+  geom_point()+
+#  geom_smooth()+
+  #stat_cor()+
+  facet_wrap(~area)
+
+df_overall %>% 
+  ggplot(aes(x=hand_p, y=maxCH4, color=C)) +
+  geom_point()+
+#  geom_smooth()+
+  #stat_cor()+
+  facet_wrap(~area)
+```
+
+###Predicted annual emission
+
+```{r}
+library(RColorBrewer)
+
+df %>% 
+  filter(fco2 < 12) %>% 
+  ggplot(aes(x = month, y = fco2,
+             color = factor(point),
+             group = point)) +
+  geom_point() +
+  geom_smooth(se = FALSE) +
+  scale_color_brewer(palette = "RdYlBu") +
+  facet_wrap(~area)
+
+df %>% 
+  filter(fco2 < 12) %>% 
+  ggplot(aes(x = month, y = fch4,
+             color = factor(point),
+             group = point)) +
+  geom_point() +
+  geom_smooth(se = FALSE) +
+  scale_color_brewer(palette = "RdYlBu") +
+  facet_wrap(~area)
+```
+
+Calculating the area below the curves
+
+##### For CO2
+
+1. Sampling date as numeric variable (counting days)
+```{r}
+date <- read.csv("Data/FluxProcessed/data_coleta_pts.csv", sep=";") %>%
+  mutate(data = as.Date(data, format = "%d/%m/%Y"))
+
+df_annual <- df %>%
+  left_join(
+    date %>% 
+      dplyr::select(area, point, data, month),
+    by = c("area", "point", "month")
+  ) %>%
+  group_by(area, point) %>%
+  mutate(
+    day_num = as.numeric(data - min(data, na.rm = TRUE))
+  ) %>%
+  ungroup()
+
+```
+
+2. Loess model
+```{r}
+library(purrr)
+library(pracma)
+
+# Ajuste dos modelos
+loess_models <- df_annual %>%
+  group_by(area, point) %>%
+  summarise(
+    model = list(
+      loess(fco2 ~ day_num,
+            data = cur_data())
+    ),
+    .groups = "drop"
+  )
+
+# Predições suaves
+pred_data <- loess_models %>%
+  left_join(
+    df_annual %>%
+      group_by(area, point) %>%
+      summarise(
+        min_day = min(day_num),
+        max_day = max(day_num),
+        .groups = "drop"
+      ),
+    by = c("area", "point")
+  ) %>%
+  mutate(
+    newdata = map2(
+      min_day,
+      max_day,
+      ~ tibble(
+        day_num = seq(.x, .y, length.out = 200)
+      )
+    ),
+    
+    pred = map2(model, newdata,
+                ~ predict(.x, newdata = .y))
+  )
+# Transformar em dataframe longo
+pred_long <- pred_data %>%
+  mutate(
+    df_pred = map2(newdata, pred,
+                   ~ tibble(
+                     day_num = .x$day_num,
+                     pred = .y
+                   ))
+  ) %>%
+  dplyr::select(area, point, df_pred) %>%
+  unnest(df_pred)
+```
+
+3. Verifying
+```{r}
+ggplot() +
+
+  geom_point(
+    data = df_annual,
+    aes(x = day_num,
+        y = fco2
+        #color = point)
+  )) +
+
+  geom_line(
+    data = pred_long,
+    aes(x = day_num,
+        y = pred,
+        #color = point,
+        group = interaction(area, point)),
+    linewidth = 1
+  ) +
+
+  facet_wrap(~ interaction(area, point)) +
+
+  theme_minimal()
+```
+
+4. Area above curve
+```{r}
+
+areas_co2 <- pred_long %>%
+  group_by(area, point) %>%
+  summarise(
+    emission_umol = trapz(day_num, pred) * 86400, #seconds_per_day,
+    .groups = "drop"
+  )
+
+```
+
+
+##### For CH4
+
+
+1. Loess model
+```{r}
+
+# Ajuste dos modelos
+loess_models_ch4 <- df_annual %>%
+  group_by(area, point) %>%
+  summarise(
+    model = list(
+      loess(fch4 ~ day_num,
+            data = cur_data())
+    ),
+    .groups = "drop"
+  )
+
+# Predições suaves
+pred_data_ch4 <- loess_models_ch4 %>%
+  left_join(
+    df_annual %>%
+      group_by(area, point) %>%
+      summarise(
+        min_day = min(day_num),
+        max_day = max(day_num),
+        .groups = "drop"
+      ),
+    by = c("area", "point")
+  ) %>%
+  mutate(
+    newdata = map2(
+      min_day,
+      max_day,
+      ~ tibble(
+        day_num = seq(.x, .y, length.out = 200)
+      )
+    ),
+    
+    pred = map2(model, newdata,
+                ~ predict(.x, newdata = .y))
+  )
+# Transformar em dataframe longo
+pred_long_ch4 <- pred_data_ch4 %>%
+  mutate(
+    df_pred = map2(newdata, pred,
+                   ~ tibble(
+                     day_num = .x$day_num,
+                     pred = .y
+                   ))
+  ) %>%
+  dplyr::select(area, point, df_pred) %>%
+  unnest(df_pred)
+```
+
+3. Verifying
+```{r}
+ggplot() +
+
+  geom_point(
+    data = df_annual,
+    aes(x = day_num,
+        y = fch4
+        #color = point)
+  )) +
+
+  geom_line(
+    data = pred_long_ch4,
+    aes(x = day_num,
+        y = pred,
+        #color = point,
+        group = interaction(area, point)),
+    linewidth = 1
+  ) +
+
+  facet_wrap(~ interaction(area, point)) +
+
+  theme_minimal()
+```
+
+4. Area above curve
+```{r}
+
+areas_ch4 <- pred_long_ch4 %>%
+  group_by(area, point) %>%
+  summarise(
+    emission_nmol = trapz(day_num, pred) * 86400, #seconds_per_day,
+    .groups = "drop"
+  )
+
+```
+
+```{r}
+areas_co2 <- areas_co2 %>% rename(emission_umolCO2 = emission_umol)
+areas_ch4 <- areas_ch4 %>% rename(emission_nmolCH4 = emission_nmol)
+
+df_overall <- df_overall %>% 
+  left_join(areas_co2, by=c("area", "point")) %>%
+  left_join(areas_ch4, by=c("area", "point")) %>%
+  mutate(point=factor(point, levels=c("P1", "P2", "P3", "P4", "P5", "P6", "P7", "P8", "P9", "P10")))
+
+df_overall %>%
+  ggplot(aes(x=hand_p, y=emission_umolCO2, color=meanSWC, size=C))+
+  geom_point()+
+  geom_hline(yintercept = 0)+
+  facet_wrap(~area) 
+
+df_overall %>%
+  ggplot(aes(x=point, y=emission_nmolCH4, color=meanSWC, size=C))+
+  geom_point()+
+  #geom_smooth(method="lm")+
+  geom_hline(yintercept = 0)+
+  facet_wrap(~area) 
+
+```
+
+## Relation Carbon and Water
+
+```{r}
+df_overall %>% ggplot(aes(x=medianSWC, y=C)) +
+  geom_point() +
+  stat_cor() +
+  geom_smooth(method="lm")
+
+df_overall %>% ggplot(aes(x=meanSWC, y=sqrt(C))) +
+  geom_point(aes(color=point))+
+  stat_cor() +
+  geom_smooth(method="lm") 
+
+df_overall %>% ggplot(aes(x=sdSWC, y=C)) +
+  geom_point()+
+  stat_cor() +
+  geom_smooth(method="lm")
+```
+
+Getting a PCA
+
+```{r}
+df_overall <- df_overall %>%
+  mutate(
+    sqrtC = sqrt(C),
+    label = interaction(area, point, sep = "_")
+  )
+
+# PCA
+pca <- prcomp(
+  df_overall[, c("sqrtC", "meanSWC", "hand_p")],
+  scale. = TRUE
+)
+
+# Scree plot
+fviz_eig(pca, addlabels = TRUE)
+
+# Biplot com labels personalizados
+fviz_pca_biplot(
+  pca,
+  label = "var",                 # mostra nomes das variáveis
+  habillage = df_overall$area,   # opcional: colore por área
+  addEllipses = FALSE,
+  repel = TRUE
+) +
+  geom_text(
+    aes(
+      x = pca$x[,1],
+      y = pca$x[,2],
+      label = df_overall$label
+    ),
+    size = 3
+  )
+
+df_overall$PC1 <- pca$x[,1]
+df_overall$PC2 <- pca$x[,2]
+```
+
+
+```{r}
+df_overall %>% 
+  ggplot(aes(y=PC1, x=sqrtC)) +
+  geom_point()+
+  stat_cor()+
+  geom_smooth(method="lm")
+
+df_overall %>% 
+  ggplot(aes(y=PC1, x=meanSWC)) +
+  geom_point()+
+  stat_cor()+
+  geom_smooth(method="lm")
+
+df_overall %>% 
+  ggplot(aes(y=PC1, x=hand)) +
+  geom_point()+
+  stat_cor()+
+  geom_smooth(method="lm")
+
+df_overall %>% 
+  ggplot(aes(y=PC1, x=hand_p)) +
+  geom_point()+
+  stat_cor()+
+  geom_smooth(method="lm")
+
+
+```
+
+Clustering by this axis
+
+```{r}
+min_pc1 <- min(df_overall$PC1)
+max_pc1 <- max(df_overall$PC1)
+
+breaks <- seq(
+  from = min_pc1,
+  to = max_pc1,
+  length.out = 4
+)
+
+breaks
+
+df_class <- df_overall %>%
+  ungroup() %>%
+  mutate(
+    PC1_group = cut(
+      PC1,
+      breaks = breaks,
+      labels = 1:3,
+      include.lowest = TRUE
+    )
+  )
+
+df <- left_join(df_class, df, by = c("area", "point"))
+
+```
+
+```{r}
+df_class2 <- df_overall %>%
+  ungroup() %>%
+  mutate(PC1_decil = ntile(PC1, 10)) %>%
+  mutate(
+    PC1_class2 = case_when(
+      PC1_decil %in% c(1, 2, 3, 4) ~ "Low",
+      PC1_decil %in% c(9, 10) ~ "High",
+      TRUE ~ "Intermediate"
+    )
+  ) %>%
+  mutate(PC1_decil = factor(PC1_decil),
+         PC1_class2 = factor(PC1_class2, 
+                             levels = c("Low", "Intermediate", "High"))) %>%
+  dplyr::select(area, point, PC1_decil, PC1_class2, PC1, PC2, label)
+
+df <- left_join(df_class2, df, by = c("area", "point"))
+
+
+library(ggrepel)
+
+df_class %>% 
+  ggplot(aes(y=label, x=PC1, color=PC1_group)) +
+  geom_point()
+
+df_class %>% ggplot(aes(x=PC1_group, y=C)) +
+  geom_boxplot()
+df_class %>% ggplot(aes(x=PC1_group, y=meanSWC)) +
+  geom_boxplot()
+df_class %>% ggplot(aes(x=PC1_group, y=minSWC)) +
+  geom_boxplot()
+df_class %>% ggplot(aes(x=PC1_group, y=maxSWC)) +
+  geom_boxplot()
+df_class %>% ggplot(aes(x=PC1_group, y=hand_p)) +
+  geom_boxplot()
+df_class %>% ggplot(aes(x=PC1_group, y=hand)) +
+  geom_boxplot()
+df_class %>% ggplot(aes(x=PC1_group, y=meanCO2)) +
+  geom_boxplot()
+df_class %>% ggplot(aes(x=PC1_group, y=meanCH4)) +
+  geom_boxplot()
+df_class %>% ggplot(aes(x=PC1_group, y=minCO2)) +
+  geom_boxplot()
+df_class %>% ggplot(aes(x=PC1_group, y=minCH4)) +
+  geom_boxplot()
+  df_class %>% ggplot(aes(x=PC1_group, y=maxCO2)) +
+  geom_boxplot()
+df_class %>% ggplot(aes(x=PC1_group, y=maxCH4)) +
+  geom_boxplot()
+
+df_class %>% mutate(point2 = interaction(area,point)) %>% 
+  ggplot(aes(x=PC1, y=point, color=PC1_group))+
+  geom_point()+
+   geom_text(aes(label = point),
+            hjust = -0.2)+
+  facet_wrap(~area)
+  
+
+```
+
+Ploting
+
+```{r}
+df_cluster_means <- df %>%
+  group_by(PC1_group) %>%
+  summarise(CH4_mean = mean(fch4), na.rm = TRUE,
+            CO2_mean = mean(fco2), na.rm = TRUE)
+
+df %>% 
+  mutate(month = factor(month, levels = c("set24", "nov24", "fev25", "jun25", "set25", "dez25"))) %>% 
+  mutate(point2 = paste(area, point)) %>%
+    ggplot(aes(x = month, y = fch4, color = swc,  group = point2)) + 
+  theme_clean()+
+  geom_point (alpha=0.8) +
+  geom_line(alpha = 0.5) + # Adiciona as linhas conectando os pontos +
+  geom_smooth(aes(group = 1), method = "loess", color = "red", linetype = "dashed", se = T) +
+  geom_hline(data = df_cluster_means, 
+             aes(yintercept = CH4_mean), 
+             color = "black", 
+             linewidth = 0.5) +
+  geom_hline(aes(yintercept = 0),
+             color = "black", 
+             linewidth = 0.5,
+             linetype = "dashed"
+          ) +
+  facet_wrap(~PC1_group) +
+     ggtitle("Clusters Annual Emissions") +
+  ylab(expression(CH[4]~(nmol ~ m^{-2} * s^{-1})))+
+  xlab("") +
+  labs(color="SWC (%)")
+
+
+df %>% 
+  mutate(month = factor(month, levels = c("set24", "nov24", "fev25", "jun25", "set25", "dez25"))) %>% 
+  mutate(point2 = paste(area, point)) %>%
+  ggplot(aes(x = month, y = fco2, color = swc,  group = point2)) + 
+  theme_clean()+
+  geom_point ( alpha=0.8) +
+  geom_line(alpha = 0.5) + # Adiciona as linhas conectando os pontos +
+  geom_smooth(aes(group = 1), method = "loess", color = "red", linetype = "dashed", se = T) +
+  geom_hline(data = df_cluster_means, 
+             aes(yintercept = CO2_mean), 
+             color = "black", 
+             linewidth = 0.5) +
+  geom_hline(aes(yintercept = 0),
+             color = "black", 
+             linewidth = 0.5,
+             linetype = "dashed"
+          ) +
+  facet_wrap(~PC1_group) +
+     ggtitle("Clusters Annual Emissions") +
+  ylab(expression(CO[2]~(umol ~ m^{-2} * s^{-1})))+
+  xlab("") +
+  labs(color="SWC (%)")
+```
+
+
+```{r}
+df %>% 
+  mutate(month = factor(month, levels = c("set24", "nov24", "fev25", "jun25", "set25", "dez25"))) %>%
+  ggplot(aes(x=month, y=fco2)) +
+  geom_boxplot()+
+  stat_compare_means()+
+  facet_wrap(~PC1_group)
+
+df %>% 
+  mutate(month = factor(month, levels = c("set24", "nov24", "fev25", "jun25", "set25", "dez25"))) %>%
+  ggplot(aes(x=month, y=fch4)) +
+  geom_boxplot()+
+  #geom_jitter()+
+  stat_compare_means()+
+  geom_hline(yintercept = 0)+
+  facet_wrap(~PC1_group)
+```
+
+
+Testing
+
+```{r}
+#CO2
+library(emmeans)
+library(multcomp)
+
+mod1 <- aov(log(fco2+1) ~ month*PC1_group, data=df)
+performance::check_model(mod1)
+summary(mod1)
+
+emm1 <- emmeans(mod1, ~ month | PC1_group)
+pairs(emm1, adjust = "tukey") %>% as.data.frame() %>% filter(p.value<0.05)
+
+letters1 <- cld(emm1, adjust = "tukey", Letters = letters) %>%
+  as.data.frame() %>%
+  mutate(.group = gsub(" ", "", .group))
+
+posicoes1 <- df %>%
+  group_by(month, PC1_group) %>%
+  summarise(
+    ymax = max(log(fco2 + 1), na.rm = TRUE),
+    .groups = "drop"
+  )
+
+letters1 <- left_join(letters1, posicoes1,
+                         by = c("month", "PC1_group"))
+
+ggplot(df,
+       aes(x = month,
+           y = log(fco2 + 1))) +
+
+  geom_boxplot(position = position_dodge(width = 0.8)) +
+
+  geom_text(data = letters1,
+            aes(y = ymax + 0.2,
+                label = .group,
+                group = PC1_group),
+            position = position_dodge(width = 0.8),
+            size = 5) +
+
+  theme_bw() +
+  facet_wrap(~PC1_group)
+```
+
+CH4
+```{r}
+mod2 <- aov(log(fch4+5) ~ month*PC1_group, data=df)
+performance::check_model(mod2)
+summary(mod2)
+
+emm2 <- emmeans(mod2, ~ month | PC1_group)
+pairs(emm2, adjust = "tukey") %>% as.data.frame() %>% filter(p.value<0.05)
+
+letters2 <- cld(emm2, adjust = "tukey", Letters = letters) %>%
+  as.data.frame() %>%
+  mutate(.group = gsub(" ", "", .group))
+
+posicoes2 <- df %>%
+  group_by(month, PC1_group) %>%
+  summarise(
+    ymax = max(log(fch4 + 5), na.rm = TRUE),
+    .groups = "drop"
+  )
+
+letters2 <- left_join(letters2, posicoes2,
+                         by = c("month", "PC1_group"))
+
+ggplot(df,
+       aes(x = month,
+           y = log(fch4+5))) +
+
+  geom_boxplot(position = position_dodge(width = 0.8)) +
+
+  geom_text(data = letters2,
+            aes(y = ymax + 0.2,
+                label = .group,
+                group = PC1_group),
+            position = position_dodge(width = 0.8),
+            size = 5) +
+
+  theme_bw() +
+  facet_wrap(~PC1_group)
+```
+
+##Plots
+
+Soil Moisture
+```{r}
+
+a <- 
+  df %>% 
+  ggplot(aes(x=swc, y=fco2)) +
+  geom_point(aes(color=C)) + 
+  geom_smooth() +
+  theme_bw() +
+  ylab(expression("CO"[2]~" Flux (µmol/m²s)")) +
+  xlab("Soil Moisture (m³/m³)") +
+  labs(color="Carbon Content (%)")+
+  theme(axis.text = element_text(size=10),
+        axis.title = element_text(size=12)) +
+  scale_color_viridis(option="inferno",direction = -1)
+
+
+b <- 
+  df %>% 
+  #filter (C < 10) %>%
+  ggplot(aes(x=swc, y=fch4)) +
+  geom_point(aes(color=C)) + 
+  geom_smooth() +
+  theme_bw() +
+  geom_hline(yintercept=0, linetype="dotted")+
+  ylab(expression("CH"[4]~" Flux (nmol/m²s)")) +
+  xlab("Soil Moisture (m³/m³)") +
+  labs(color="Carbon Content (%)")+
+  theme(axis.text = element_text(size=10),
+        axis.title = element_text(size=12)) +
+  scale_color_viridis(option="inferno",direction = -1) #+
+  #ggtitle("Carbon < 10%")
+
+c <- ggpubr::ggarrange(a,b, common.legend = F)
+```
+
