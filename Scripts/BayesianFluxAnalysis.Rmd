@@ -26,6 +26,9 @@ dir.create("Plots", showWarnings = FALSE)
 ## 1. Libraries
 
 ```{r libraries, cache=FALSE}
+
+rm(list=ls())
+
 library(tidyverse)
 library(lubridate)
 library(brms)
@@ -45,127 +48,121 @@ color_scheme_set("viridis")
 
 ## 2. Data Loading
 
-We replicate the data preparation from `PreliminarAnalyses.Rmd` in a condensed,
-self-contained block so this script can be run independently.
+```{r}
+# Check if data exists
+data_path <- "Data/Moisture/tms_data.csv"
 
-```{r load-flux}
-# ── helper: read one flux CSV (handles both sep=";" and sep=",") ──────────────
-read_flux <- function(path, sep = ";", area_label, month_label,
-                      datetime_fn = dmy_hm) {
-  df <- read.csv(path, sep = sep, skip = 1) %>% slice(-1)
-  # normalise the datetime column name (varies across campaigns)
-  if ("DATE_TIME.initial_value" %in% names(df)) {
-    df <- df %>% rename(datetime = DATE_TIME.initial_value)
-  } else if (!"datetime" %in% names(df)) {
-    # last resort: use the first column
-    names(df)[1] <- "datetime"
-  }
-  df %>%
-    mutate(area     = area_label,
-           month    = month_label,
-           datetime = datetime_fn(datetime))
-}
-
-# ── field campaigns (sep=";") ─────────────────────────────────────────────────
-campaigns_semi <- list(
-  list("Data/FluxProcessed/vvt_set24.csv",   "vvt",   "set24"),
-  list("Data/FluxProcessed/7q_set24.csv",    "seteq", "set24"),
-  list("Data/FluxProcessed/bbt_set24.csv",   "bbt",   "set24"),
-  list("Data/FluxProcessed/cr_set24.csv",    "cr",    "set24"),
-  list("Data/FluxProcessed/ing_set24.csv",   "ing",   "set24"),
-  list("Data/FluxProcessed/vvt_nov24.csv",   "vvt",   "nov24"),
-  list("Data/FluxProcessed/7q_nov24.csv",    "seteq", "nov24"),
-  list("Data/FluxProcessed/bbt_nov24.csv",   "bbt",   "nov24"),
-  list("Data/FluxProcessed/cr_nov24.csv",    "cr",    "nov24"),
-  list("Data/FluxProcessed/ing_nov24.csv",   "ing",   "nov24"),
-  list("Data/FluxProcessed/vvt_fev25.csv",   "vvt",   "fev25"),
-  list("Data/FluxProcessed/7q_fev25.csv",    "seteq", "fev25"),
-  list("Data/FluxProcessed/bbt_fev25.csv",   "bbt",   "fev25"),
-  list("Data/FluxProcessed/cr_fev25.csv",    "cr",    "fev25"),
-  list("Data/FluxProcessed/ing_fev25.csv",   "ing",   "fev25"),
-  list("Data/FluxProcessed/vvt_jun25.csv",   "vvt",   "jun25"),
-  list("Data/FluxProcessed/7q_jun25.csv",    "seteq", "jun25"),
-  list("Data/FluxProcessed/bbt_jun25.csv",   "bbt",   "jun25"),
-  list("Data/FluxProcessed/cr_jun25.csv",    "cr",    "jun25"),
-  list("Data/FluxProcessed/ing_jun25.csv",   "ing",   "jun25"),
-  list("Data/FluxProcessed/vvt_set25.csv",   "vvt",   "set25"),
-  list("Data/FluxProcessed/7q_set25.csv",    "seteq", "set25"),
-  list("Data/FluxProcessed/bbt_set25.csv",   "bbt",   "set25"),
-  list("Data/FluxProcessed/cr_set25.csv",    "cr",    "set25"),
-  list("Data/FluxProcessed/ing_set25.csv",   "ing",   "set25")
-)
-
-df_semi <- map_dfr(campaigns_semi, function(x)
-  read_flux(x[[1]], sep = ";", area_label = x[[2]], month_label = x[[3]],
-            datetime_fn = dmy_hm))
-
-# ── december 2025 (sep=",", different datetime column) ───────────────────────
-campaigns_comma <- list(
-  list("Data/FluxProcessed/vvt_dez25.csv",   "vvt",   "dez25"),
-  list("Data/FluxProcessed/7q_dez25.csv",    "seteq", "dez25"),
-  list("Data/FluxProcessed/bbt_dez25.csv",   "bbt",   "dez25"),
-  list("Data/FluxProcessed/cr_dez25.csv",    "cr",    "dez25"),
-  list("Data/FluxProcessed/ing_dez25.csv",   "ing",   "dez25")
-)
-
-df_comma <- map_dfr(campaigns_comma, function(x)
-  read_flux(x[[1]], sep = ",", area_label = x[[2]], month_label = x[[3]],
-            datetime_fn = ymd_hms))
-
-# ── merge and rename key columns ──────────────────────────────────────────────
-df <- bind_rows(df_semi, df_comma) %>%
-  mutate_at(vars(3, 4, 7:14), as.numeric) %>%
-  rename(point = COMMENT,
-         swc   = SWC_2.mean,
-         ts    = TS_2.mean,
-         fch4  = FCH4_DRY,
-         fco2  = FCO2_DRY) %>%
-  mutate(
-    fch4_nmol = (fch4 / 1000) * 86400,
-    month = factor(month,
-                   levels = c("set24","nov24","fev25","jun25","set25","dez25")),
-    area  = factor(area),
-    point = factor(point,
-                   levels = paste0("P", 1:10))
+if (!file.exists(data_path)) {
+  stop(
+    "File 'tms_data.csv' not found.\n",
+    "Please download it from: https://drive.google.com/file/d/1--GgRlHxu_I2oiT_HL_feh3D9u9p3fWD/view?usp=drive_link\n",
+    "and place it in 'Data/Moisture/'."
   )
+}
 ```
 
-```{r load-covariates}
-# ── soil properties ───────────────────────────────────────────────────────────
-solos <- read.csv("Data/Soils/Soil.csv", sep = ";")
-df    <- left_join(df, solos, by = c("area", "point"))
+### Flux Data
+```{r}
+# 1. List all csv
+files <- list.files(
+  path = "Data/FluxProcessed",
+  pattern = "^(vvt|7q|bbt|cr|ing).+\\.csv$",
+  full.names = TRUE
+)
 
-# ── HAND (topographic wetness / height above nearest drainage) ────────────────
-hand <- read.csv("Data/Hand/Flux_points_HAND.csv", sep = ";") %>%
-  select(area, point, hand) %>%
+# 2. Function to deal with different formats
+read_allfiles <- function(arq) {
+  
+  # Detectar o separador
+  sep_df <- if(grepl(";", readLines(arq, n = 1))) ";" else ","
+  
+  # 1. Pegar apenas o nome do arquivo (sem o caminho das pastas)
+  # 2. Remover a extensão .csv
+  file_name <- str_remove(basename(arq), "\\.csv")
+  
+  # 3. Agora o split vai funcionar como esperado
+  meta <- str_split(file_name, "_")[[1]]
+  
+  df_temp <- read.csv(arq, sep = sep_df, skip = 1) %>%
+    dplyr::slice(-1) %>%
+    # Agora meta[1] será "vvt" e meta[2] será "set24"
+    mutate(area = meta[1], month = meta[2])
+  
+  # Lógica de nomes de coluna
+  if ("DATE_TIME.initial_value" %in% names(df_temp)) {
+    df_temp <- df_temp %>% rename(datetime = DATE_TIME.initial_value)
+  }
+  
+  # Formatos de data
+  df_temp <- df_temp %>%
+    mutate(datetime = parse_date_time(datetime, orders = c("dmy HM", "ymd HMS")))
+  
+  return(df_temp)
+}
+
+# 3. Processing
+df <- files %>% 
+  map_dfr(read_allfiles) %>%
+  
+  mutate(across(c(3, 4, 7:14), as.numeric),
+         across(c(2, 16, 17), as.factor)) %>%
+  rename(point = COMMENT, 
+         swc = SWC_2.mean, 
+         ts = TS_2.mean, 
+         fch4 = FCH4_DRY, 
+         fco2 = FCO2_DRY,
+         lat = LATITUDE,
+         long = LONGITUDE) %>%
+  mutate(month = factor(month, levels = c("set24", "nov24", "fev25", "jun25", "set25", "dez25"))) %>%
+  mutate(area=case_when(area =="7q"~"seteq",
+         TRUE ~ as.character(area)))
+
+df <- df %>% mutate(point2 = paste(area, point))
+
+str(df)
+rm(files)
+
+
+```
+
+### Soil Data
+
+```{r}
+soil <- read.csv("Data/Soils/Soil.csv", sep=";") 
+df <- left_join(df, soil, by=c("area", "point"))
+```
+
+### HAND Data
+(Hight Above Near Drainage)
+
+```{r}
+hand <- read.csv("Data/Hand/Flux_points_HAND.csv", sep=";") %>% 
+  dplyr::select("area", "point", "hand") %>% 
   group_by(area) %>%
-  mutate(hand_p = (hand - min(hand, na.rm = TRUE)) /
-                  (max(hand, na.rm = TRUE) - min(hand, na.rm = TRUE))) %>%
-  ungroup()
+  mutate(hand_p = (hand-min(hand))/(max(hand)-min(hand)))
 
-df <- left_join(df, hand, by = c("area", "point")) %>%
-  mutate(area  = factor(area),
-         point = factor(point, levels = paste0("P", 1:10)))
+df <- left_join(df, hand, by=c("area", "point")) %>% mutate(area=factor(area),
+       point=factor(point, levels=c("P1", "P2", "P3", "P4", "P5", "P6", "P7", "P8", "P9", "P10")))
+```
 
-# ── monthly precipitation (WorldClim) ─────────────────────────────────────────
-prep <- read.csv("Data/Preciptation/prep_2010-2024_worldclim.csv") %>%
-  select(mes, prec) %>%
-  rename(month_num = mes)
+### Preciptation Data
 
-month_map <- c(set24 = 9, nov24 = 11, fev25 = 2, jun25 = 6,
-               set25 = 9, dez25 = 12)
+```{r}
+prep <- read.csv("Data/Preciptation/Prep_CHIRPS.csv", sep=";") %>%
+  mutate(
+    month = str_replace(month, "/", ""),
+    point = ponto,
+    area = ifelse(area == "7q", "seteq", area)
+  ) %>%
+  rename(prep_wk = acum_semana,
+         prep_1mt = acum_1_mes,
+         prep_2mt = acum_2_meses,
+         prep_3mt = acum_3_meses,
+         prep_4mt = acum_4_meses,
+         prep_day = precip_dia) %>%
+  dplyr::select(-c(data))
 
-df <- df %>%
-  mutate(month_num = month_map[as.character(month)]) %>%
-  left_join(prep, by = "month_num")
-
-# ── unique point identifier for random effects ─────────────────────────────────
-df <- df %>%
-  mutate(point2 = paste(area, point))
-
-cat("Rows:", nrow(df), "| Areas:", nlevels(df$area),
-    "| Points:", length(unique(df$point2)),
-    "| Campaigns:", nlevels(df$month), "\n")
+df <- left_join(df, prep, by=c("area", "point", "month")) 
 ```
 
 ---
@@ -179,7 +176,7 @@ and efficient sampling.
 
 ```{r build-analysis-df}
 df_an <- df %>%
-  select(fco2, fch4, swc, ts, hand, hand_p, prec, C,
+  select(fco2, fch4, swc, ts, hand, hand_p, prep_1mt, prep_2mt, prep_3mt, prep_4mt, prep_wk , C, clay, 
          area, point, point2, month) %>%
   filter(fco2 > 0) %>%                         # log requires positive values
   mutate(
@@ -188,15 +185,22 @@ df_an <- df %>%
     swc_s     = as.numeric(scale(swc)),
     ts_s      = as.numeric(scale(ts)),
     hand_s    = as.numeric(scale(hand_p)),      # relative HAND within each area
-    prec_s    = as.numeric(scale(prec)),
+    prep_1mt_s    = as.numeric(scale(prep_1mt)),
+    prep_2mt_s    = as.numeric(scale(prep_2mt)),
+    prep_3mt_s    = as.numeric(scale(prep_3mt)),
+    prep_4mt_s    = as.numeric(scale(prep_4mt)),
+    prep_wk_s    = as.numeric(scale(prep_wk)),
     C_s       = as.numeric(scale(C)),
+    clay_s = as.numeric(scale(clay)),
     swc_beta  = pmin(pmax(swc, 1e-4), 1 - 1e-4),  # clamped to (0,1) strict for Beta regression
     fch4_pos  = fch4 + 5,                          # shifted to strictly positive for Gamma regression
     fch4_hurdle = if_else(fch4 <= 0, 0, fch4)     # true zeros for hurdle model: 0 = aerobic/no emission, >0 = active methanogenesis
   ) %>%
-  drop_na(log_fco2, log_fch4, swc_s, ts_s, hand_s, prec_s)
+  drop_na(log_fco2, log_fch4, swc_s, ts_s, hand_s, prep_1mt_s, prep_2mt_s, prep_3mt_s, prep_4mt_s, prep_wk_s)
 
 cat("Analysis dataset:", nrow(df_an), "observations\n")
+
+#Tentar resolver os NAs de junho do VVT. Usar TOMST para cobrir esses valores
 ```
 
 ### Quick overview
@@ -224,7 +228,16 @@ p4 <- ggplot(df_an, aes(x = C, fill = area)) +
 
 ```{r corr-plot, fig.height=5}
 df_an %>%
-  select(swc, ts, hand_p, prec, C, fco2, fch4) %>%
+  select(prep_1mt, prep_2mt, prep_3mt, prep_4mt, prep_wk, fco2, fch4, swc) %>%
+  drop_na() %>%
+  cor(use = "pairwise.complete.obs") %>%
+  ggcorrplot(hc.order = TRUE, type = "lower", lab = TRUE, lab_size = 3,
+             colors = c("#2166ac","white","#b2182b"),
+             title = "Pairwise correlations — preciptation variables")
+#3months has the higher correlation with swc and fch4. This is also consistent with our previous data.
+
+df_an %>%
+  select(swc, ts, hand_p, prep_3mt, C, clay, fco2, fch4) %>%
   drop_na() %>%
   cor(use = "pairwise.complete.obs") %>%
   ggcorrplot(hc.order = TRUE, type = "lower", lab = TRUE, lab_size = 3,
@@ -238,7 +251,7 @@ df_an %>%
 
 **Question:** How do temperature, precipitation, and topographic position (HAND) drive soil moisture, and does this vary across wetland areas?
 
-**Formula:** `swc ~ ts + prec + hand + (1 | area)`
+**Formula:** `swc ~ ts + prep_3mt + hand + (1 | area)`
 
 ```{r mod-swc, results="hide"}
 prior_swc <- c(
@@ -248,13 +261,13 @@ prior_swc <- c(
   prior(exponential(1), class = "sigma")         # residual SD
 )
 
-mod_swc_path <- "Data/mod_swc.rds"
+mod_swc_path <- "Data/mod_swc2.rds"
 
 if (file.exists(mod_swc_path)) {
   mod_swc <- readRDS(mod_swc_path)
 } else {
   mod_swc <- brm(
-    swc_s ~ ts_s + prec_s + hand_s + (1 | area),
+    swc_s ~ prep_3mt_s + hand_s + clay_s + (1 | area),
     data    = df_an,
     family  = gaussian(),
     prior   = prior_swc,
@@ -263,14 +276,17 @@ if (file.exists(mod_swc_path)) {
     chains  = 4,
     cores   = 4,
     seed    = 42,
-    control = list(adapt_delta = 0.95)
+    control = list(adapt_delta = 0.99)
   )
   saveRDS(mod_swc, mod_swc_path)
 }
+
+
 ```
 
 ```{r mod-swc-summary}
 summary(mod_swc)
+bayes_R2(mod_swc)
 ```
 
 ```{r mod-swc-plots, fig.height=6}
@@ -280,8 +296,7 @@ post_swc <- as_draws_df(mod_swc) %>%
   pivot_longer(everything(), names_to = "parameter", values_to = "value") %>%
   filter(parameter != "b_Intercept") %>%
   mutate(parameter = recode(parameter,
-    "b_ts_s"   = "Temperature",
-    "b_prec_s" = "Precipitation",
+    "b_prep_3mt_s" = "Precipitation",
     "b_hand_s" = "HAND (topo. position)"
   ))
 
@@ -295,22 +310,26 @@ p_swc_coef <- ggplot(post_swc, aes(x = value, y = parameter, fill = after_stat(x
   theme_classic(base_size = 13)
 
 # ── Conditional effects ────────────────────────────────────────────────────────
-ce_swc <- conditional_effects(mod_swc, effects = c("ts_s","prec_s","hand_s"),
+ce_swc <- conditional_effects(mod_swc, effects = c("prep_3mt_s","hand_s", "clay_s"),
                                re_formula = NA)  # marginalised over areas
 
-p_ts   <- plot(ce_swc, plot = FALSE)[[1]] +
-  labs(x = "Temperature (std.)", y = "SWC (std.)", title = "Effect of Temp.") +
+p_prep   <- plot(ce_swc, plot = FALSE, points = T )[[1]] +
+  labs(x = "Precipitation (std.)", y = "SWC (std.)", title = "Effect of Preciptation.") +
   theme_classic()
-p_prec <- plot(ce_swc, plot = FALSE)[[2]] +
-  labs(x = "Precipitation (std.)", y = NULL, title = "Effect of Precip.") +
-  theme_classic()
-p_hand <- plot(ce_swc, plot = FALSE)[[3]] +
+
+p_hand <- plot(ce_swc, plot = FALSE, points = T)[[2]] +
   labs(x = "HAND — topo. position (std.)", y = NULL, title = "Effect of HAND") +
   theme_classic()
 
-p_swc_coef / (p_ts + p_prec + p_hand)
+p_clay <- plot(ce_swc, plot = FALSE, points = T)[[3]] +
+  labs(x = "Clay", y = NULL, title = "Effect of Clay") +
+  theme_classic()
+
+p_swc_coef / (p_prep + p_hand + p_clay)
 ggsave("Plots/Bayes_M1_SoilMoisture.pdf", width = 10, height = 8)
 ```
+
+Here, clay do not seem to be very important. So, we can try to remove it and see if the model is the same. If so, we can predict moisture with only prep and hand, both avaible for the entire area. 
 
 ```{r mod-swc-ranef, fig.height=4}
 # ── Random effects: how much does each area differ? ───────────────────────────
@@ -366,7 +385,7 @@ prior_swc_beta <- c(
 )
 
 # ── cache name updated (_month) so a fresh fit is triggered automatically ─────
-mod_swc_beta_path <- "Data/mod_swc_beta_month.rds"
+mod_swc_beta_path <- "Data/mod_swc_beta.rds"
 
 if (file.exists(mod_swc_beta_path)) {
   mod_swc_beta <- readRDS(mod_swc_beta_path)
@@ -374,17 +393,16 @@ if (file.exists(mod_swc_beta_path)) {
   mod_swc_beta <- brm(
     # (1|month) added: each campaign gets its own SWC intercept,
     # capturing the dry-season / wet-season bimodality seen in pp_check.
-    swc_beta ~ ts_s + prec_s + hand_s + (1 | area) + (1 | month),
+    swc_beta ~  prep_3mt_s + hand_s + (1 | area),
     data    = df_an,
     family  = Beta(),
-    prior   = c(prior_swc_beta,
-                prior(exponential(1), class = "sd", group = "month")),
+    prior   = c(prior_swc_beta),
     iter    = 4000,
     warmup  = 1000,
     chains  = 4,
     cores   = 4,
     seed    = 42,
-    control = list(adapt_delta = 0.97)   # slightly higher for extra RE
+    control = list(adapt_delta = 0.97)   
   )
   saveRDS(mod_swc_beta, mod_swc_beta_path)
 }
@@ -393,6 +411,7 @@ if (file.exists(mod_swc_beta_path)) {
 ```{r mod-swc-beta-summary, cache=FALSE}
 # ── NEW (4b): summary — b coefficients on logit(SWC) scale ───────────────────
 summary(mod_swc_beta)
+bayes_R2(mod_swc_beta)
 ```
 
 ```{r mod-swc-beta-plots, fig.height=6}
@@ -402,8 +421,8 @@ post_swc_beta <- as_draws_df(mod_swc_beta) %>%
   pivot_longer(everything(), names_to = "parameter", values_to = "value") %>%
   filter(parameter != "b_Intercept") %>%
   mutate(parameter = recode(parameter,
-    "b_ts_s"   = "Temperature",
-    "b_prec_s" = "Precipitation",
+    "b_clay_s"   = "Clay",
+    "b_prep_3mt_s" = "Precipitation",
     "b_hand_s" = "HAND (topo. position)"
   ))
 
@@ -413,26 +432,24 @@ p_swc_beta_coef <- ggplot(post_swc_beta,
   geom_vline(xintercept = 0, linetype = "dashed", colour = "grey40") +
   scale_fill_manual(values = c("#4575b4","#d73027"), guide = "none") +
   labs(title    = "Model 1b — Soil Moisture Drivers (Beta regression)",
-       subtitle = "Coefficients on logit(SWC) scale — direction should match M1 Gaussian",
+         subtitle = "Coefficients on logit(SWC) scale — direction should match M1 Gaussian",
        x = "Effect on logit(SWC)", y = NULL) +
   theme_classic(base_size = 13)
 
 # conditional_effects back-transforms to the [0,1] scale automatically
 ce_swc_beta <- conditional_effects(mod_swc_beta,
-                                   effects    = c("ts_s","prec_s","hand_s"),
+                                   effects    = c("prep_3mt_s","hand_s"),
                                    re_formula = NA)
 
-p_ts_b   <- plot(ce_swc_beta, plot = FALSE)[[1]] +
-  labs(x = "Temperature (std.)", y = "SWC (prop.)", title = "Effect of Temp.") +
+
+p_prec_b <- plot(ce_swc_beta, plot = FALSE)[[1]] +
+  labs(x = "Precipitation (std.)", y = "SWC (prop.)", title = "Effect of Precip.") +
   theme_classic()
-p_prec_b <- plot(ce_swc_beta, plot = FALSE)[[2]] +
-  labs(x = "Precipitation (std.)", y = NULL, title = "Effect of Precip.") +
-  theme_classic()
-p_hand_b <- plot(ce_swc_beta, plot = FALSE)[[3]] +
+p_hand_b <- plot(ce_swc_beta, plot = FALSE)[[2]] +
   labs(x = "HAND (std.)", y = NULL, title = "Effect of HAND") +
   theme_classic()
 
-p_swc_beta_coef / (p_ts_b + p_prec_b + p_hand_b)
+p_swc_beta_coef / (p_prec_b + p_hand_b)
 ggsave("Plots/Bayes_M1b_SWC_Beta.pdf", width = 10, height = 8)
 ```
 
@@ -465,7 +482,7 @@ if (file.exists(mod_co2_path)) {
   mod_co2 <- readRDS(mod_co2_path)
 } else {
   mod_co2 <- brm(
-    log_fco2 ~ swc_s + ts_s + hand_s + (1 | area) + (1 | point2) + (1 | month),
+    log_fco2 ~ swc_s + ts_s + hand_s +  (1 | area) + (1 |point2) + (1 | month),
     data    = df_an,
     family  = gaussian(),
     prior   = prior_flux,
@@ -474,7 +491,7 @@ if (file.exists(mod_co2_path)) {
     chains  = 4,
     cores   = 4,
     seed    = 42,
-    control = list(adapt_delta = 0.95)
+    control = list(adapt_delta = 0.99)
   )
   saveRDS(mod_co2, mod_co2_path)
 }
@@ -482,6 +499,7 @@ if (file.exists(mod_co2_path)) {
 
 ```{r mod-co2-summary}
 summary(mod_co2)
+bayes_R2(mod_co2)
 ```
 
 ```{r mod-co2-plots, fig.height=6}
@@ -602,6 +620,7 @@ if (file.exists(mod_co2_quad_path)) {
 #   b_swc_s       → linear slope (positive = generally rising with moisture)
 #   b_Iswc_sE2    → curvature (negative = inverted-U, i.e. a peak exists)
 summary(mod_co2_quad)
+bayes_R2(mod_co2_quad)
 ```
 
 ### Posterior coefficient plot — quadratic model *(NEW)*
@@ -759,8 +778,8 @@ if (file.exists(mod_co2_C_path)) {
   mod_co2_C <- readRDS(mod_co2_C_path)
 } else {
   mod_co2_C <- brm(
-    log_fco2 ~ swc_s + I(swc_s^2) + C_s + hand_s +
-               (1 | area) + (1 | point2) + (1 | month),
+    log_fco2 ~ swc_s + I(swc_s^2) + ts_s + C_s  + 
+               (1 | area) + (1| point2) + (1 | month),
     data    = df_an %>% drop_na(C_s),
     family  = gaussian(),
     prior   = prior_flux,           # same weakly-informative priors as M2/M2b
@@ -779,6 +798,7 @@ if (file.exists(mod_co2_C_path)) {
 # ── NEW (5c): summary ─────────────────────────────────────────────────────────
 cat("n =", nrow(df_an %>% drop_na(C_s)), "observations with soil C data\n")
 summary(mod_co2_C)
+bayes_R2(mod_co2_C)
 ```
 
 ```{r mod-co2-C-coef, fig.height=4, fig.width=8}
@@ -791,7 +811,7 @@ post_co2_C <- as_draws_df(mod_co2_C) %>%
     "b_swc_s"    = "SWC (linear)",
     "b_Iswc_sE2" = "SWC² (curvature)",
     "b_C_s"      = "Organic Carbon (%)",
-    "b_hand_s"   = "HAND (topo. position)"
+    "b_ts_s"   = "Soil Temperature"
   ))
 
 ggplot(post_co2_C, aes(x = value, y = parameter, fill = after_stat(x > 0))) +
@@ -809,7 +829,7 @@ ggsave("Plots/Bayes_M2c_CO2_Carbon_coef.pdf", width = 8, height = 4)
 ```{r mod-co2-C-ce, fig.height=5, fig.width=10}
 # ── NEW (5c): conditional effects — SWC curve + carbon + HAND ────────────────
 ce_co2_C <- conditional_effects(mod_co2_C,
-                                 effects    = c("swc_s","C_s","hand_s"),
+                                 effects    = c("swc_s","C_s","ts_s"),
                                  re_formula = NA)
 
 p_swc_c  <- plot(ce_co2_C, plot = FALSE)[[1]] +
@@ -818,11 +838,11 @@ p_swc_c  <- plot(ce_co2_C, plot = FALSE)[[1]] +
 p_C_c    <- plot(ce_co2_C, plot = FALSE)[[2]] +
   labs(x = "Organic Carbon, C% (std.)", y = NULL, title = "Effect of C (%)") +
   theme_classic()
-p_hand_c <- plot(ce_co2_C, plot = FALSE)[[3]] +
-  labs(x = "HAND (std.)", y = NULL, title = "Effect of HAND") +
+p_ts_c <- plot(ce_co2_C, plot = FALSE)[[3]] +
+  labs(x = "Soil Temperature (std.)", y = NULL, title = "Effect of Soil Temperature") +
   theme_classic()
 
-p_swc_c + p_C_c + p_hand_c
+p_swc_c + p_C_c + p_ts_c
 ggsave("Plots/Bayes_M2c_CO2_Carbon_CE.pdf", width = 10, height = 4)
 ```
 
@@ -843,9 +863,9 @@ ggsave("Plots/Bayes_M2c_CO2_Carbon_CE.pdf", width = 10, height = 4)
 > flux data). This is exactly analogous to why we use Beta regression for a [0,1]
 > bounded variable — we are choosing the right distributional family for the data.
 >
-> **Formula:** `fco2 ~ swc + swc² + C + hand + (1|area) + (1|point2) + (1|month)`
+> **Formula:** `fco2 ~ swc + swc² + C + ts + (1|area) + (1|point2) + (1|month)`
 >
-> Structure mirrors M2c (quadratic SWC + organic carbon, no temperature);
+> Structure mirrors M2c (quadratic SWC + organic carbon + temperature);
 > Gamma family replaces the log-transform + Gaussian approach.
 
 ```{r mod-co2-gamma, results="hide"}
@@ -866,7 +886,7 @@ if (file.exists(mod_co2_gamma_path)) {
   mod_co2_gamma <- readRDS(mod_co2_gamma_path)
 } else {
   mod_co2_gamma <- brm(
-    fco2 ~ swc_s + I(swc_s^2) + C_s + hand_s +
+    fco2 ~ swc_s + I(swc_s^2) + C_s + ts_s +
            (1 | area) + (1 | point2) + (1 | month),
     data    = df_an %>% drop_na(C_s),
     family  = Gamma(link = "log"),
@@ -889,6 +909,7 @@ if (file.exists(mod_co2_gamma_path)) {
 # exp(Intercept) = geometric mean CO₂ at average predictor values
 cat("n =", nrow(df_an %>% drop_na(C_s)), "observations with soil C data\n")
 summary(mod_co2_gamma)
+bayes_R2(mod_co2_gamma)
 ```
 
 ```{r mod-co2-gamma-ppcheck, fig.height=4}
@@ -910,7 +931,7 @@ post_co2_gamma <- as_draws_df(mod_co2_gamma) %>%
     "b_swc_s"    = "SWC (linear)",
     "b_Iswc_sE2" = "SWC² (curvature)",
     "b_C_s"      = "Organic Carbon (%)",
-    "b_hand_s"   = "HAND (topo. position)"
+    "b_ts_s"   = "Soil Temeperature"
   ))
 
 ggplot(post_co2_gamma, aes(x = value, y = parameter, fill = after_stat(x > 0))) +
@@ -930,7 +951,7 @@ ggsave("Plots/Bayes_M2d_CO2_Gamma_coef.pdf", width = 8, height = 4)
 # conditional_effects() for Gamma back-transforms via exp() automatically,
 # so the y-axis is in µmol CO₂ m⁻² s⁻¹ — directly interpretable.
 ce_co2_gamma <- conditional_effects(mod_co2_gamma,
-                                     effects    = c("swc_s","C_s","hand_s"),
+                                     effects    = c("swc_s","C_s","ts_s"),
                                      re_formula = NA)
 
 p_swc_g  <- plot(ce_co2_gamma, plot = FALSE)[[1]] +
@@ -939,11 +960,11 @@ p_swc_g  <- plot(ce_co2_gamma, plot = FALSE)[[1]] +
 p_C_g    <- plot(ce_co2_gamma, plot = FALSE)[[2]] +
   labs(x = "Organic Carbon, C% (std.)", y = NULL, title = "Effect of C (%)") +
   theme_classic()
-p_hand_g <- plot(ce_co2_gamma, plot = FALSE)[[3]] +
-  labs(x = "HAND (std.)", y = NULL, title = "Effect of HAND") +
+p_ts_g <- plot(ce_co2_gamma, plot = FALSE)[[3]] +
+  labs(x = "Soil Temperature (ºC)", y = NULL, title = "Effect of Soil Temperature") +
   theme_classic()
 
-p_swc_g + p_C_g + p_hand_g
+p_swc_g + p_C_g + p_ts_g
 ggsave("Plots/Bayes_M2d_CO2_Gamma_CE.pdf", width = 10, height = 4)
 ```
 
@@ -1091,6 +1112,9 @@ if (file.exists(mod_ch4_quad_path)) {
   )
   saveRDS(mod_ch4_quad, mod_ch4_quad_path)
 }
+
+summary(mod_ch4_quad)
+bayes_R2(mod_ch4_quad)
 ```
 
 ### Model 3c — spline CH₄ model *(NEW)*
@@ -1128,6 +1152,9 @@ if (file.exists(mod_ch4_spl_path)) {
   )
   saveRDS(mod_ch4_spl, mod_ch4_spl_path)
 }
+
+summary(mod_ch4_spl)
+bayes_R2(mod_ch4_spl)
 ```
 
 ### Posterior coefficient plots *(NEW)*
@@ -1174,7 +1201,7 @@ new_data_ch4 <- expand_grid(
 )
 
 # predictions from quadratic model
-pred_ch4_quad <- new_data_ch4 %>%
+  pred_ch4_quad <- new_data_ch4 %>%
   add_epred_draws(mod_ch4_quad, ndraws = 500, re_formula = NA) %>%
   group_by(swc_s) %>%
   summarise(med = median(.epred),
@@ -1286,7 +1313,7 @@ if (file.exists(mod_ch4_C_path)) {
   mod_ch4_C <- readRDS(mod_ch4_C_path)
 } else {
   mod_ch4_C <- brm(
-    log_fch4 ~ swc_s + C_s + hand_s +
+    log_fch4 ~ swc_s + C_s + ts_s +
                (1 | area) + (1 | point2) + (1 | month),
     data    = df_an %>% drop_na(C_s),
     family  = gaussian(),
@@ -1309,6 +1336,7 @@ if (file.exists(mod_ch4_C_path)) {
 # ── NEW (6c): summary ─────────────────────────────────────────────────────────
 cat("n =", nrow(df_an %>% drop_na(C_s)), "observations with soil C data\n")
 summary(mod_ch4_C)
+bayes_R2(mod_ch4_C)
 ```
 
 ```{r mod-ch4-C-coef, fig.height=4, fig.width=8}
@@ -1321,7 +1349,7 @@ post_ch4_C <- as_draws_df(mod_ch4_C) %>%
   mutate(parameter = recode(parameter,
     "b_swc_s"  = "Soil Moisture (SWC)",
     "b_C_s"    = "Organic Carbon (%)",
-    "b_hand_s" = "HAND (topo. position)"
+    "b_ts_s" = "Soil Temperature"
   ))
 
 ggplot(post_ch4_C, aes(x = value, y = parameter, fill = after_stat(x > 0))) +
@@ -1339,7 +1367,7 @@ ggsave("Plots/Bayes_M3d_CH4_Carbon_coef.pdf", width = 8, height = 4)
 ```{r mod-ch4-C-ce, fig.height=5, fig.width=10}
 # ── NEW (6c): conditional effects — linear SWC + carbon + HAND ────────────────
 ce_ch4_C <- conditional_effects(mod_ch4_C,
-                                 effects    = c("swc_s","C_s","hand_s"),
+                                 effects    = c("swc_s","C_s","ts_s"),
                                  re_formula = NA)
 
 p_swc_ch4_c  <- plot(ce_ch4_C, plot = FALSE)[[1]] +
@@ -1349,7 +1377,7 @@ p_C_ch4_c    <- plot(ce_ch4_C, plot = FALSE)[[2]] +
   labs(x = "Organic Carbon, C% (std.)", y = NULL, title = "Effect of C (%)") +
   theme_classic()
 p_hand_ch4_c <- plot(ce_ch4_C, plot = FALSE)[[3]] +
-  labs(x = "HAND (std.)", y = NULL, title = "Effect of HAND") +
+  labs(x = "Soil Temperature (std.)", y = NULL, title = "Effect of Soil Temperature") +
   theme_classic()
 
 p_swc_ch4_c + p_C_ch4_c + p_hand_ch4_c
@@ -1386,7 +1414,7 @@ if (file.exists(mod_ch4_gamma_path)) {
   mod_ch4_gamma <- readRDS(mod_ch4_gamma_path)
 } else {
   mod_ch4_gamma <- brm(
-    fch4_pos ~ swc_s + ts_s + hand_s +
+    fch4_pos ~ swc_s + ts_s + C_s +
                (1 | area) + (1 | point2) + (1 | month),
     data    = df_an,
     family  = Gamma(link = "log"),
@@ -1408,6 +1436,7 @@ if (file.exists(mod_ch4_gamma_path)) {
 ```{r mod-ch4-gamma-summary, cache=FALSE}
 # ── NEW (6d): summary ─────────────────────────────────────────────────────────
 summary(mod_ch4_gamma)
+bayes_R2(mod_ch4_gamma)
 ```
 
 ```{r mod-ch4-gamma-ppcheck, fig.height=4}
@@ -1429,7 +1458,7 @@ post_ch4_gamma <- as_draws_df(mod_ch4_gamma) %>%
   mutate(parameter = recode(parameter,
     "b_swc_s"  = "Soil Moisture (SWC)",
     "b_ts_s"   = "Temperature",
-    "b_hand_s" = "HAND (topo. position)"
+    "b_C_s" = "Soil Carbon "
   ))
 
 ggplot(post_ch4_gamma, aes(x = value, y = parameter, fill = after_stat(x > 0))) +
@@ -1448,7 +1477,7 @@ ggsave("Plots/Bayes_M3e_CH4_Gamma_coef.pdf", width = 8, height = 4)
 # ── NEW (6d): conditional effects on the original (CH₄ + 5) scale ─────────────
 # Subtract 5 from y-axis labels mentally to read as true CH₄ flux.
 ce_ch4_gamma <- conditional_effects(mod_ch4_gamma,
-                                     effects    = c("swc_s","ts_s","hand_s"),
+                                     effects    = c("swc_s","ts_s","C_s"),
                                      re_formula = NA)
 
 p_swc_ge  <- plot(ce_ch4_gamma, plot = FALSE)[[1]] +
@@ -1457,11 +1486,11 @@ p_swc_ge  <- plot(ce_ch4_gamma, plot = FALSE)[[1]] +
 p_ts_ge   <- plot(ce_ch4_gamma, plot = FALSE)[[2]] +
   labs(x = "Temperature (std.)", y = NULL, title = "Effect of Temp.") +
   theme_classic()
-p_hand_ge <- plot(ce_ch4_gamma, plot = FALSE)[[3]] +
-  labs(x = "HAND (std.)", y = NULL, title = "Effect of HAND") +
+p_C_ge <- plot(ce_ch4_gamma, plot = FALSE)[[3]] +
+  labs(x = "Carbon (std.)", y = NULL, title = "Effect of HAND") +
   theme_classic()
 
-p_swc_ge + p_ts_ge + p_hand_ge
+p_swc_ge + p_ts_ge + p_C_ge
 ggsave("Plots/Bayes_M3e_CH4_Gamma_CE.pdf", width = 10, height = 4)
 ```
 
@@ -1569,10 +1598,10 @@ if (file.exists(mod_ch4_hurdle_path)) {
   mod_ch4_hurdle <- brm(
     bf(
       # positive component: how much CH₄ when emitting?
-      fch4_hurdle ~ swc_s + ts_s + hand_s +
-                    (1 | area) + (1 | point2) + (1 | month),
+      fch4_hurdle ~ swc_s + ts_s + C_s +
+                    (1 | area)  + (1|point2) + (1 | month) ,
       # hurdle component: P(zero / aerobic state)
-      hu          ~ swc_s + hand_s + (1 | area) + (1 | month)
+      hu          ~ swc_s  +  (1 | area)  + (1|point2) + (1 | month)
     ),
     data    = df_an,
     family  = hurdle_gamma(link = "log", link_hu = "logit"),
@@ -1595,6 +1624,7 @@ if (file.exists(mod_ch4_hurdle_path)) {
 #   Regression Coefficients (hu)       → hurdle (logistic) component, logit scale
 # A negative hu coefficient on swc_s means more moisture = less likely zero = more CH₄
 summary(mod_ch4_hurdle)
+bayes_R2(mod_ch4_hurdle)
 ```
 
 ```{r mod-ch4-hurdle-ppcheck, fig.height=4}
@@ -1616,7 +1646,8 @@ post_hurdle_pos <- as_draws_df(mod_ch4_hurdle) %>%
   mutate(parameter = recode(parameter,
     "b_swc_s"  = "Soil Moisture (SWC)",
     "b_ts_s"   = "Temperature",
-    "b_hand_s" = "HAND (topo. position)"
+    "b_hand_s" = "HAND (topo. position)",
+    "b_C_s" = "Carbon"
   ))
 
 p_pos <- ggplot(post_hurdle_pos,
@@ -1667,7 +1698,7 @@ ggsave("Plots/Bayes_M3f_CH4_Hurdle_coef.pdf", width = 9, height = 5)
 # interpretable quantity: E[CH₄] = P(emitting) × E[CH₄ | emitting].
 
 ce_hurdle <- conditional_effects(mod_ch4_hurdle,
-                                  effects    = c("swc_s","ts_s","hand_s"),
+                                  effects    = c("swc_s","ts_s","hand_s", "C_s"),
                                   re_formula = NA)
 
 p_swc_h  <- plot(ce_hurdle, plot = FALSE)[[1]] +
@@ -1676,11 +1707,11 @@ p_swc_h  <- plot(ce_hurdle, plot = FALSE)[[1]] +
 p_ts_h   <- plot(ce_hurdle, plot = FALSE)[[2]] +
   labs(x = "Temperature (std.)", y = NULL,
        title = "Temp. → CH₄ (marginal)") + theme_classic()
-p_hand_h <- plot(ce_hurdle, plot = FALSE)[[3]] +
-  labs(x = "HAND (std.)", y = NULL,
-       title = "HAND → CH₄ (marginal)") + theme_classic()
+p_C_h <- plot(ce_hurdle, plot = FALSE)[[3]] +
+  labs(x = "C (std.)", y = NULL,
+       title = "C → CH₄ (marginal)") + theme_classic()
 
-p_swc_h + p_ts_h + p_hand_h +
+p_swc_h + p_ts_h + p_C_h +
   plot_annotation(
     subtitle = paste("Marginal effect = P(emitting) × E[CH₄ | emitting].",
                      "Incorporates both sub-models simultaneously.")
@@ -1723,13 +1754,13 @@ prior_C <- c(
   prior(exponential(1), class = "sigma")
 )
 
-mod_C_path <- "Data/mod_C.rds"
+mod_C_path <- "Data/mod_C2.rds"
 
 if (file.exists(mod_C_path)) {
   mod_C <- readRDS(mod_C_path)
 } else {
   mod_C <- brm(
-    C_s ~ swc_s + ts_s + hand_s + (1 | area),
+    C_s ~ swc_s + hand_s + clay_s + (1 | area),
     data    = df_an %>% drop_na(C),
     family  = gaussian(),
     prior   = prior_C,
@@ -1746,6 +1777,7 @@ if (file.exists(mod_C_path)) {
 
 ```{r mod-C-summary}
 summary(mod_C)
+bayes_R2(mod_C)
 ```
 
 ```{r mod-C-plots, fig.height=6}
@@ -1755,8 +1787,8 @@ post_C <- as_draws_df(mod_C) %>%
   filter(parameter != "b_Intercept") %>%
   mutate(parameter = recode(parameter,
     "b_swc_s"  = "Soil Moisture",
-    "b_ts_s"   = "Temperature",
-    "b_hand_s" = "HAND (topo. position)"
+    "b_hand_s" = "HAND (topo. position)",
+    "b_clay_s"   = "Clay"
   ))
 
 p_C_coef <- ggplot(post_C, aes(x = value, y = parameter, fill = after_stat(x > 0))) +
@@ -1769,17 +1801,17 @@ p_C_coef <- ggplot(post_C, aes(x = value, y = parameter, fill = after_stat(x > 0
   theme_classic(base_size = 13)
 
 ce_C <- conditional_effects(mod_C,
-                             effects    = c("swc_s","ts_s","hand_s"),
+                             effects    = c("swc_s","hand_s", "clay_s"),
                              re_formula = NA)
 
 p_swc4  <- plot(ce_C, plot = FALSE)[[1]] +
   labs(x = "SWC (std.)", y = "C content (std.)", title = "Effect of SWC") + theme_classic()
-p_ts4   <- plot(ce_C, plot = FALSE)[[2]] +
-  labs(x = "Temperature (std.)", y = NULL, title = "Effect of Temp.") + theme_classic()
-p_hand4 <- plot(ce_C, plot = FALSE)[[3]] +
+p_hand4 <- plot(ce_C, plot = FALSE)[[2]] +
   labs(x = "HAND (std.)", y = NULL, title = "Effect of HAND") + theme_classic()
+p_clay4 <- plot(ce_C, plot = FALSE)[[3]] +
+  labs(x = "Clay (std.)", y = NULL, title = "Effect of Clay") + theme_classic()
 
-p_C_coef / (p_swc4 + p_ts4 + p_hand4)
+p_C_coef / (p_swc4 + p_hand4 + p_clay4)
 ggsave("Plots/Bayes_M4_Carbon.pdf", width = 10, height = 8)
 ```
 
@@ -1837,7 +1869,8 @@ hand_seq <- seq(-2, 2, length.out = 60)
 pred_swc_area <- expand_grid(
   hand_s = hand_seq,
   ts_s   = 0,
-  prec_s = 0,
+  prep_3mt_s = 0,
+  clay_s = 0,
   area   = unique(df_an$area)
 ) %>%
   add_epred_draws(mod_swc, ndraws = 500, re_formula = ~(1|area)) %>%
@@ -1857,6 +1890,8 @@ pred_co2_swc <- expand_grid(
   swc_s  = swc_seq,
   C_s    = 0,       # organic carbon held at its mean
   hand_s = 0,
+  clay_s = 0,
+  ts_s = 0,
   area   = unique(df_an$area)[1],
   point2 = unique(df_an$point2)[1],
   month  = unique(df_an$month)[1]
